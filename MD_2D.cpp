@@ -9,6 +9,7 @@
 
 #include <stdexcept>
 #include <vector>
+#include <set>
 
 using namespace fantom;
 
@@ -25,6 +26,7 @@ namespace
                 : VisAlgorithm::Options(control)
             {
                 add<Field<2, Scalar>>("Field", "A 2D scalar field", definedOn<Grid<2>>(Grid<2>::Points));
+                add<double>("Isovalue", "The desired isovalue to show.", 0.5);
                 add<Color>("Color", "The color of the graphics.", Color(0.75, 0.75, 0.0));
                 add<double>("Threshold", "The threshold which points to show.", 0.0008);
                 add<double>("Radius", "The size of the scalar-ellipsoids.", 0.1);
@@ -49,6 +51,7 @@ namespace
         {
             std::shared_ptr<const Field<2, Scalar>> field = options.get<Field<2, Scalar>>("Field");
             std::shared_ptr<const Function<Scalar>> function = options.get<Function<Scalar>>("Field");
+            double isovalue = options.get<double>("Isovalue");
             Color color = options.get<Color>("Color");
             double threshold = options.get<double>("Threshold");
             double radius = options.get<double>("Radius");
@@ -72,7 +75,12 @@ namespace
             const ValueArray<Point2> &points = grid->points();
             std::vector<Point3> vertices;
 
+            std::vector<Point2> trianglePoints;
+
             auto evaluator = field->makeEvaluator();
+
+
+            /* START ### ISOVALUES FROM Ex3 */
 
             //iterate through every point of the field, checking the value against the threshold
             for (size_t i = 0; i < grid->numPoints(); i++)
@@ -108,14 +116,76 @@ namespace
 
             setGraphics("Ellipsoids", performanceObjectRenderer->commit());
 
-            /************************************/
-            std::vector<Point2> intersect = calcIntersection(1, 0.5,1,0.5,1);
+            /* END ### ISOVALUES FROM Ex3 */
+
+
+
+            auto discEval = function->makeDiscreteEvaluator();
+            std::vector<std::vector<Point2>> diamondPoints;
+
+            //iterate on cell by cell basis to find adjacent cells
+            //find matching cells by comparing two indices between cells
+            for (size_t i = 0; i < grid->numCells(); i++) {
+                Cell cell = grid->cell(i);
+                size_t i0 = cell.index(0);
+                size_t i1 = cell.index(1);
+                size_t i2 = cell.index(2);
+
+                for (size_t j = 0; j < grid->numCells(); j++) {
+                    if (i == j) continue;
+                    Cell tempCell = grid->cell(j);
+
+                    std::set<size_t> tempIndices { i0,i1,i2 };
+                    tempIndices.insert(tempCell.index(0));
+                    tempIndices.insert(tempCell.index(1));
+                    tempIndices.insert(tempCell.index(2));
+
+                    if (tempIndices.size() == 4) {
+
+                        std::vector<Point2> diamP;
+                        for (auto it=tempIndices.begin(); it!=tempIndices.end(); ++it) {
+                            diamP.push_back( Point2(points[*it]) );
+                        }
+                        diamondPoints.push_back(diamP);
+                    }
+                        
+                }
+            }
             
-            infoLog() << "Intersections: " << intersect[0] << std::endl;
+
+
+
+            /************LOGGING***************/
+            std::vector<Point2> fD = diamondPoints[0];
+
+            for ( auto &i : fD ) {
+                infoLog() << "Diamant-Punkt: " << i << std::endl;
+            }
+            evaluator->reset(fD[0]);
+            double s0 = norm(evaluator->value());
+            infoLog() << "Wert bei Diamant-Punkt: " << s0 << std::endl;
+            evaluator->reset(fD[1]);
+            double s1 = norm(evaluator->value());
+            infoLog() << "Wert bei Diamant-Punkt: " << s1 << std::endl;
+            evaluator->reset(fD[2]);
+            double s2 = norm(evaluator->value());
+            infoLog() << "Wert bei Diamant-Punkt: " << s2 << std::endl;
+            evaluator->reset(fD[3]);
+            double s3 = norm(evaluator->value());
+            infoLog() << "Wert bei Diamant-Punkt: " << s3 << std::endl;
+
+            std::vector<Point2> intersect = calcIntersection(isovalue, s1, s3, s0, s2);
+            
+            for ( auto &i : intersect ) {
+                infoLog() << "Intersection: " << i << std::endl;
+                if (i[0] >= 0 && i[0] <= 1) {
+                    infoLog() << "Intersection in D: " << bilinearTransform(fD[1], fD[3], fD[0], fD[2], i[0]) << std::endl;
+                }      
+            }
         }
 
-    private:
 
+    private:
         /*calc intersections of edge e with bilinear plane (hyperbola for fixed iso-value c) in mapped unit square 
         
                     s3                   
@@ -166,6 +236,13 @@ namespace
             Point2 v2 = {0, -2};
 
             return v1 + (v2 * y * y);
+        }
+
+        //maps coordinats inside the unit square to diamond D via bilinear transformation
+        //ONLY for specific intersection condition where x = y
+        Point2 bilinearTransform(Point2 d0, Point2 d1, Point2 d2, Point2 d3, double y)
+        {
+            return d3 + (d0 + d1 - 2*d3) * y + (d3 - d0 + d2 - d1) * y * y;
         }
         
     };
