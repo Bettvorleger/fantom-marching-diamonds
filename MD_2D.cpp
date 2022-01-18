@@ -30,6 +30,7 @@ namespace
                 add<Color>("Color", "The color of the graphics.", Color(0.75, 0.75, 0.0));
                 add<double>("Threshold", "The threshold which points to show.", 0.0008);
                 add<double>("Radius", "The size of the scalar-ellipsoids.", 0.1);
+                add<int>("Index", "Index of Diamond.", 0);
             }
         };
 
@@ -39,6 +40,7 @@ namespace
                 : VisAlgorithm::VisOutputs(control)
             {
                 addGraphics("Ellipsoids");
+                addGraphics("Diamonds");
             }
         };
 
@@ -55,6 +57,7 @@ namespace
             Color color = options.get<Color>("Color");
             double threshold = options.get<double>("Threshold");
             double radius = options.get<double>("Radius");
+            int indexChoice = options.get<int>("Index");
 
             //check if input field is set
             if (!field)
@@ -127,28 +130,46 @@ namespace
             //find matching cells by comparing two indices between cells
             for (size_t i = 0; i < grid->numCells(); i++) {
                 Cell cell = grid->cell(i);
+
                 size_t i0 = cell.index(0);
                 size_t i1 = cell.index(1);
                 size_t i2 = cell.index(2);
+                size_t i3;
 
-                for (size_t j = 0; j < grid->numCells(); j++) {
-                    if (i == j) continue;
+                for (size_t j = 1; j < grid->numCells(); j++) {
+                    if (i >= j) continue;
                     Cell tempCell = grid->cell(j);
+                    std::vector<Point2> diamP; //new diamond vector element
 
-                    std::set<size_t> tempIndices { i0,i1,i2 };
-                    tempIndices.insert(tempCell.index(0));
-                    tempIndices.insert(tempCell.index(1));
-                    tempIndices.insert(tempCell.index(2));
+                    for (int p = 0; p < 3; p++) {
+                        size_t t0 = tempCell.index(p);
+                        size_t t1 = tempCell.index((p + 1) % 3);
+                        size_t t2 = tempCell.index((p + 2) % 3);
 
-                    if (tempIndices.size() == 4) {
-
-                        std::vector<Point2> diamP;
-                        for (auto it=tempIndices.begin(); it!=tempIndices.end(); ++it) {
-                            diamP.push_back( Point2(points[*it]) );
+                        if (i0 == t0) {
+                            if (i1 == t1) { //i2 opposite of i3 
+                                i3 = t2;
+                                diamP.insert(diamP.end(), {Point2(points[i2]), Point2(points[i0]), Point2(points[i1]), Point2(points[i3])});
+                                break;
+                            }
+                            else if (i2 == t1) { //i1 opposite of i3
+                                i3 = t2;
+                                diamP.insert(diamP.end(), {Point2(points[i1]), Point2(points[i0]), Point2(points[i2]), Point2(points[i3])});
+                                break;
+                            } 
+                            else if (i1 == t2) { //i2 opposite of i3
+                                i3 = t1;
+                                diamP.insert(diamP.end(), {Point2(points[i2]), Point2(points[i0]), Point2(points[i1]), Point2(points[i3])});
+                                break;
+                            }                      
+                            else if (i2 == t2) { //i1 opposite of i3
+                                i3 = t1;
+                                diamP.insert(diamP.end(), {Point2(points[i1]), Point2(points[i0]), Point2(points[i2]), Point2(points[i3])});
+                                break;
+                            }
                         }
-                        diamondPoints.push_back(diamP);
                     }
-                        
+                if (!diamP.empty()) diamondPoints.push_back(diamP);
                 }
             }
             
@@ -156,8 +177,26 @@ namespace
 
 
             /************LOGGING***************/
-            std::vector<Point2> fD = diamondPoints[0];
+            std::vector<Point2> fD = diamondPoints[indexChoice];
+            infoLog() << "Anzahl Diamanten gefunden:" << diamondPoints.size() << std::endl;
 
+            std::vector<VectorF<2>> vertGrid;
+            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[0]), VectorF<2>(fD[1])});
+            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[0]), VectorF<2>(fD[2])});
+            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[3]), VectorF<2>(fD[1])});
+            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[3]), VectorF<2>(fD[2])});
+
+            //set bounding sphere and draw lines for the grid
+            std::shared_ptr<graphics::Drawable> gridLines = system.makePrimitive(
+                graphics::PrimitiveConfig{graphics::RenderPrimitives::LINES}
+                    .vertexBuffer("in_vertex", system.makeBuffer(vertGrid))
+                    .uniform("u_lineWidth", 1.0f)
+                    .uniform("u_color", color),
+                system.makeProgramFromFiles(resourcePath + "shader/line/noShading/singleColor/vertex.glsl",
+                                            resourcePath + "shader/line/noShading/singleColor/fragment.glsl",
+                                            resourcePath + "shader/line/noShading/singleColor/geometry.glsl"));
+            setGraphics("Diamonds", gridLines);
+            
             for ( auto &i : fD ) {
                 infoLog() << "Diamant-Punkt: " << i << std::endl;
             }
