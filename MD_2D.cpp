@@ -28,8 +28,6 @@ namespace
                 add<Field<2, Scalar>>("Field", "A 2D scalar field", definedOn<Grid<2>>(Grid<2>::Points));
                 add<double>("Isovalue", "The desired isovalue to show.", 0.5);
                 add<Color>("Color", "The color of the graphics.", Color(0.75, 0.75, 0.0));
-                add<double>("Threshold", "The threshold which points to show.", 0.0008);
-                add<double>("Radius", "The size of the scalar-ellipsoids.", 0.1);
                 add<int>("Index", "Index of Diamond.", 0);
             }
         };
@@ -39,7 +37,6 @@ namespace
             VisOutputs(fantom::VisOutputs::Control &control)
                 : VisAlgorithm::VisOutputs(control)
             {
-                addGraphics("Ellipsoids");
                 addGraphics("Diamonds");
             }
         };
@@ -55,8 +52,6 @@ namespace
             std::shared_ptr<const Function<Scalar>> function = options.get<Function<Scalar>>("Field");
             double isovalue = options.get<double>("Isovalue");
             Color color = options.get<Color>("Color");
-            double threshold = options.get<double>("Threshold");
-            double radius = options.get<double>("Radius");
             int indexChoice = options.get<int>("Index");
 
             //check if input field is set
@@ -76,105 +71,27 @@ namespace
 
             //get control points of the grid
             const ValueArray<Point2> &points = grid->points();
-            std::vector<Point3> vertices;
-
             std::vector<Point2> trianglePoints;
 
             auto evaluator = field->makeEvaluator();
-
-
-            /* START ### ISOVALUES FROM Ex3 */
-
-            //iterate through every point of the field, checking the value against the threshold
-            for (size_t i = 0; i < grid->numPoints(); i++)
-            {
-                Point2 point = points[i];
-                Point3 pointFlat = {point[0], point[1], (double)0};
-                evaluator->reset(point);
-
-                auto value = evaluator->value();
-
-                if (value[0] > threshold)
-                {
-                    vertices.insert(vertices.end(), pointFlat);
-                }
-            }
-
-            if (abortFlag)
-            {
-                return;
-            }
-
-            auto const &system = graphics::GraphicsSystem::instance();
-            std::string resourcePath = PluginRegistrationService::getInstance().getResourcePath("utils/Graphics");
-
-            auto performanceObjectRenderer = std::make_shared<graphics::ObjectRenderer>(system);
-            performanceObjectRenderer->reserve(graphics::ObjectRenderer::ObjectType::SPHERE, vertices.size());
-
-            //add sphere to renderer
-            for (size_t i = 0; i < vertices.size(); i++)
-            {
-                performanceObjectRenderer->addSphere(vertices[i], radius, color);
-            }
-
-            setGraphics("Ellipsoids", performanceObjectRenderer->commit());
-
-            /* END ### ISOVALUES FROM Ex3 */
-
-
-
-            auto discEval = function->makeDiscreteEvaluator();
             std::vector<std::vector<Point2>> diamondPoints;
 
-            //iterate on cell by cell basis to find adjacent cells
-            //find matching cells by comparing two indices between cells
-            for (size_t i = 0; i < grid->numCells(); i++) {
+            for (size_t i = 0; i < grid->numCells(); i++)
+            {
                 Cell cell = grid->cell(i);
 
-                size_t i0 = cell.index(0);
-                size_t i1 = cell.index(1);
-                size_t i2 = cell.index(2);
-                size_t i3;
+                for (size_t j = 1; j < grid->numCells(); j++)
+                {
+                    if (i >= j)
+                        continue;
 
-                for (size_t j = 1; j < grid->numCells(); j++) {
-                    if (i >= j) continue;
                     Cell tempCell = grid->cell(j);
-                    std::vector<Point2> diamP; //new diamond vector element
+                    std::vector<Point2> diamP = findDiamond(cell, tempCell, points); //new diamond vector element
 
-                    for (int p = 0; p < 3; p++) {
-                        size_t t0 = tempCell.index(p);
-                        size_t t1 = tempCell.index((p + 1) % 3);
-                        size_t t2 = tempCell.index((p + 2) % 3);
-
-                        if (i0 == t0) {
-                            if (i1 == t1) { //i2 opposite of i3 
-                                i3 = t2;
-                                diamP.insert(diamP.end(), {Point2(points[i2]), Point2(points[i0]), Point2(points[i1]), Point2(points[i3])});
-                                break;
-                            }
-                            else if (i2 == t1) { //i1 opposite of i3
-                                i3 = t2;
-                                diamP.insert(diamP.end(), {Point2(points[i1]), Point2(points[i0]), Point2(points[i2]), Point2(points[i3])});
-                                break;
-                            } 
-                            else if (i1 == t2) { //i2 opposite of i3
-                                i3 = t1;
-                                diamP.insert(diamP.end(), {Point2(points[i2]), Point2(points[i0]), Point2(points[i1]), Point2(points[i3])});
-                                break;
-                            }                      
-                            else if (i2 == t2) { //i1 opposite of i3
-                                i3 = t1;
-                                diamP.insert(diamP.end(), {Point2(points[i1]), Point2(points[i0]), Point2(points[i2]), Point2(points[i3])});
-                                break;
-                            }
-                        }
-                    }
-                if (!diamP.empty()) diamondPoints.push_back(diamP);
+                    if (!diamP.empty())
+                        diamondPoints.push_back(diamP);
                 }
             }
-            
-
-
 
             /************LOGGING***************/
             std::vector<Point2> fD = diamondPoints[indexChoice];
@@ -186,7 +103,14 @@ namespace
             vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[3]), VectorF<2>(fD[1])});
             vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[3]), VectorF<2>(fD[2])});
 
-            //set bounding sphere and draw lines for the grid
+            if (abortFlag)
+            {
+                return;
+            }
+
+            auto const &system = graphics::GraphicsSystem::instance();
+            std::string resourcePath = PluginRegistrationService::getInstance().getResourcePath("utils/Graphics");
+
             std::shared_ptr<graphics::Drawable> gridLines = system.makePrimitive(
                 graphics::PrimitiveConfig{graphics::RenderPrimitives::LINES}
                     .vertexBuffer("in_vertex", system.makeBuffer(vertGrid))
@@ -196,8 +120,9 @@ namespace
                                             resourcePath + "shader/line/noShading/singleColor/fragment.glsl",
                                             resourcePath + "shader/line/noShading/singleColor/geometry.glsl"));
             setGraphics("Diamonds", gridLines);
-            
-            for ( auto &i : fD ) {
+
+            for (auto &i : fD)
+            {
                 infoLog() << "Diamant-Punkt: " << i << std::endl;
             }
             evaluator->reset(fD[0]);
@@ -214,19 +139,21 @@ namespace
             infoLog() << "Wert bei Diamant-Punkt: " << s3 << std::endl;
 
             std::vector<Point2> intersect = calcIntersection(isovalue, s1, s3, s0, s2);
-            
-            for ( auto &i : intersect ) {
+
+            for (auto &i : intersect)
+            {
                 infoLog() << "Intersection: " << i << std::endl;
-                if (i[0] >= 0 && i[0] <= 1) {
+                if (i[0] >= 0 && i[0] <= 1)
+                {
                     infoLog() << "Intersection in D: " << bilinearTransform(fD[1], fD[3], fD[0], fD[2], i[0]) << std::endl;
-                }      
+                }
             }
         }
 
-
     private:
-        /*calc intersections of edge e with bilinear plane (hyperbola for fixed iso-value c) in mapped unit square 
-        
+        /**
+         * @brief calc intersections of edge e with bilinear plane (hyperbola for fixed iso-value c) in mapped unit square
+
                     s3                   
                    /  \                 s1 -> (0,1)         s1----s2
                   /    \                s2 -> (1,1)         |    / |
@@ -234,29 +161,41 @@ namespace
                   \    /                s3 -> (0,0)         | /    |
                    \  /                                     s3----s0
                     s2                  
-        */
+        
+         * @param c - desired iso-value
+         * @param s0 - iso-value at point r0
+         * @param s1 - iso-value at point r1
+         * @param s2 - iso-value at point r2
+         * @param s3 - iso-value at point r3
+         * @return std::vector<Point2> - vector of intersection points
+         */
         std::vector<Point2> calcIntersection(double c, double s0, double s1, double s2, double s3)
         {
             std::vector<Point2> intersections;
-            double denominator = 2*( s0 + s1 - s2 + s3 );
+            double denominator = 2 * (s0 + s1 - s2 + s3);
             double result;
 
             //check if denominator is too close/equals zero, return empty as error
-            if (abs(denominator) < 0.001) {
+            if (abs(denominator) < 0.001)
+            {
                 return intersections;
             }
 
-            double w = 4 * (s3 - c)*(s0 + s1 - s2 + s3) + ((s0 + s1) * (s0 + s1));
+            double w = 4 * (s3 - c) * (s0 + s1 - s2 + s3) + ((s0 + s1) * (s0 + s1));
             //check if root is real, return empty as error (only real values)
-            if (w < 0) {
+            if (w < 0)
+            {
                 return intersections;
             }
 
             w = sqrt(w);
-            if (w == 0) {
+            if (w == 0)
+            {
                 result = (s0 + s1) / denominator;
                 intersections.push_back({Point2({result, result})});
-            } else {
+            }
+            else
+            {
                 result = (s0 + s1 + w) / denominator;
                 intersections.push_back({Point2({result, result})});
 
@@ -267,8 +206,62 @@ namespace
             return intersections;
         }
 
-        //maps coordinats inside the unit square to the reference diamond R via bilinear transformation
-        //ONLY for specific intersection condition where x = y
+        /**
+         * @brief Find triangles sharing an edge by comparing cell roations against one another
+         * 
+         * @param cell - main triangle to find shared edge triangle for
+         * @param tempCell - triangle to compare with
+         * @param points - point array for converting point indices to grid coords
+         * @return std::vector<Point2> - diamond control points
+         */
+        std::vector<Point2> findDiamond(Cell cell, Cell tempCell, const ValueArray<Point2> &points)
+        {
+            size_t i0, i1, i2, i3;
+
+            size_t t0 = tempCell.index(0);
+            size_t t1 = tempCell.index(1);
+            size_t t2 = tempCell.index(2);
+
+            for (int p = 0; p < 3; p++)
+            {
+                i0 = cell.index(p);
+                i1 = cell.index((p + 1) % 3);
+                i2 = cell.index((p + 2) % 3);
+
+                if (i0 == t0)
+                {
+                    if (i1 == t1)
+                    { //i2 opposite of i3
+                        i3 = t2;
+                        return std::vector<Point2>({Point2(points[i2]), Point2(points[i0]), Point2(points[i1]), Point2(points[i3])});
+                    }
+                    else if (i2 == t1)
+                    { //i1 opposite of i3
+                        i3 = t2;
+                        return std::vector<Point2>({Point2(points[i1]), Point2(points[i0]), Point2(points[i2]), Point2(points[i3])});
+                    }
+                    else if (i1 == t2)
+                    { //i2 opposite of i3
+                        i3 = t1;
+                        return std::vector<Point2>({Point2(points[i2]), Point2(points[i0]), Point2(points[i1]), Point2(points[i3])});
+                    }
+                    else if (i2 == t2)
+                    { //i1 opposite of i3
+                        i3 = t1;
+                        return std::vector<Point2>({Point2(points[i1]), Point2(points[i0]), Point2(points[i2]), Point2(points[i3])});
+                    }
+                }
+            }
+            return std::vector<Point2>();
+        }
+
+        /**
+         * @brief maps coordinats inside the unit square to the reference diamond R via bilinear transformation
+         * ONLY for specific intersection condition where x = y
+         * 
+         * @param y - coord of intersection of edge with hyperbola in unit square
+         * @return Point2 - intersection point in reference space of dimaond R
+         */
         Point2 bilinearTransformUTR(double y)
         {
             Point2 v1 = {0, 2};
@@ -277,15 +270,31 @@ namespace
             return v1 + (v2 * y * y);
         }
 
-        //maps coordinats inside the unit square to diamond D via bilinear transformation
-        //ONLY for specific intersection condition where x = y
+        /**
+         * @brief maps coordinats inside the unit square to diamond D via bilinear transformation
+         * ONLY for specific intersection condition where x = y
+         * 
+                    d3                   
+                   /  \           
+                  /    \         
+                d1      d0      
+                  \    /      
+                   \  /        
+                    d2   
+         * 
+         * @param d0 - diamond control point in grid space
+         * @param d1 - diamond control point in grid space
+         * @param d2 - diamond control point in grid space
+         * @param d3 - coord of intersection of edge with hyperbola in unit square
+         * @param y - coord of intersection of edge with hyperbola in unit square
+         * @return Point2 - intersection point in normal grid space of diamond D
+         */
         Point2 bilinearTransform(Point2 d0, Point2 d1, Point2 d2, Point2 d3, double y)
         {
-            return d3 + (d0 + d1 - 2*d3) * y + (d3 - d0 + d2 - d1) * y * y;
+            return d3 + (d0 + d1 - 2 * d3) * y + (d3 - d0 + d2 - d1) * y * y;
         }
-        
     };
 
     AlgorithmRegister<MarchingDiamondsAlgorithm> dummy("Iso-Surface/MarchingDiamonds2D",
-                                                           "Show scalar values in 2D grid over certain threshold.");
+                                                       "Show scalar values in 2D grid over certain threshold.");
 } // namespace
