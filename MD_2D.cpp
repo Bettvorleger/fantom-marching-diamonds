@@ -9,7 +9,7 @@
 
 #include <stdexcept>
 #include <vector>
-#include <set>
+#include <unordered_map>
 
 using namespace fantom;
 
@@ -26,8 +26,8 @@ namespace
                 : VisAlgorithm::Options(control)
             {
                 add<Field<2, Scalar>>("Field", "A 2D scalar field", definedOn<Grid<2>>(Grid<2>::Points));
-                add<double>("Isovalue", "The desired isovalue to show.", 0.5);
-                add<Color>("Color", "The color of the graphics.", Color(0.75, 0.75, 0.0));
+                add<double>("Isovalue", "The desired isovalue to show.", 1);
+                add<Color>("Color", "The color of the graphics.", Color(1.0, 0.0, 0.0));
                 add<int>("Index", "Index of Diamond.", 0);
             }
         };
@@ -38,6 +38,7 @@ namespace
                 : VisAlgorithm::VisOutputs(control)
             {
                 addGraphics("Diamonds");
+                addGraphics("Iso-segments");
             }
         };
 
@@ -71,11 +72,15 @@ namespace
 
             //get control points of the grid
             const ValueArray<Point2> &points = grid->points();
-            std::vector<Point2> trianglePoints;
 
             auto evaluator = field->makeEvaluator();
-            std::vector<std::vector<Point2>> diamondPoints;
 
+            std::vector<std::vector<Point2>> diamondPoints;
+            std::vector<std::vector<size_t>> diamondCells;
+
+            std::unordered_map<size_t, std::vector<Point2>> trIntersectPoints;
+
+            //find all diamonds on grid
             for (size_t i = 0; i < grid->numCells(); i++)
             {
                 Cell cell = grid->cell(i);
@@ -89,15 +94,65 @@ namespace
                     std::vector<Point2> diamP = findDiamond(cell, tempCell, points); //new diamond vector element
 
                     if (!diamP.empty())
+                    {
                         diamondPoints.push_back(diamP);
+                        diamondCells.push_back({i, j});
+                    }
+                }
+            }
+
+            //find all intersections on grid
+            for (size_t i = 0; i < diamondPoints.size(); i++)
+            {
+                std::vector<Point2> dP = diamondPoints[i];
+                evaluator->reset(dP[0]);
+                double s0 = norm(evaluator->value());
+                evaluator->reset(dP[1]);
+                double s1 = norm(evaluator->value());
+                evaluator->reset(dP[2]);
+                double s2 = norm(evaluator->value());
+                evaluator->reset(dP[3]);
+                double s3 = norm(evaluator->value());
+
+                //the last two points have to be opposite of each other in relation to edge e
+                std::vector<Point2> intersect = calcIntersection(isovalue, s0, s3, s1, s2);
+                int validIntersects = 0;
+                Point2 trIntPoint;
+
+                for (auto &i : intersect)
+                {
+                    if (i[0] >= 0 && i[0] <= 1)
+                    {
+                        validIntersects++;
+                        trIntPoint = bilinearTransform(dP[0], dP[3], dP[1], dP[2], i[0]);
+                    }
+                }
+
+                if (validIntersects == 2)
+                {
+                    //SPLITTING-FUNCTION
+                }
+                else if (validIntersects == 1)
+                {
+                    trIntersectPoints[diamondCells[i][0]].push_back(trIntPoint);
+                    trIntersectPoints[diamondCells[i][1]].push_back(trIntPoint);
+                }
+            }
+
+            std::vector<VectorF<2>> isoSegments;
+
+            for (auto &tr : trIntersectPoints)
+            {
+                if (tr.second.size() == 2)
+                {
+                    isoSegments.insert(isoSegments.end(), {VectorF<2>(tr.second[0]), VectorF<2>(tr.second[1])});
                 }
             }
 
             /************LOGGING***************/
-            std::vector<Point2> fD = diamondPoints[indexChoice];
-            infoLog() << "Anzahl Diamanten gefunden:" << diamondPoints.size() << std::endl;
-
             std::vector<VectorF<2>> vertGrid;
+            std::vector<Point2> fD = diamondPoints[indexChoice];
+
             vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[0]), VectorF<2>(fD[1])});
             vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[0]), VectorF<2>(fD[2])});
             vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[3]), VectorF<2>(fD[1])});
@@ -121,31 +176,31 @@ namespace
                                             resourcePath + "shader/line/noShading/singleColor/geometry.glsl"));
             setGraphics("Diamonds", gridLines);
 
-            for (auto &i : fD)
-            {
-                infoLog() << "Diamant-Punkt: " << i << std::endl;
-            }
+            std::shared_ptr<graphics::Drawable> isocontour = system.makePrimitive(
+                graphics::PrimitiveConfig{graphics::RenderPrimitives::LINES}
+                    .vertexBuffer("in_vertex", system.makeBuffer(isoSegments))
+                    .uniform("u_lineWidth", 1.5f)
+                    .uniform("u_color", color),
+                system.makeProgramFromFiles(resourcePath + "shader/line/noShading/singleColor/vertex.glsl",
+                                            resourcePath + "shader/line/noShading/singleColor/fragment.glsl",
+                                            resourcePath + "shader/line/noShading/singleColor/geometry.glsl"));
+            setGraphics("Iso-segments", isocontour);
+
             evaluator->reset(fD[0]);
             double s0 = norm(evaluator->value());
-            infoLog() << "Wert bei Diamant-Punkt: " << s0 << std::endl;
             evaluator->reset(fD[1]);
             double s1 = norm(evaluator->value());
-            infoLog() << "Wert bei Diamant-Punkt: " << s1 << std::endl;
             evaluator->reset(fD[2]);
             double s2 = norm(evaluator->value());
-            infoLog() << "Wert bei Diamant-Punkt: " << s2 << std::endl;
             evaluator->reset(fD[3]);
             double s3 = norm(evaluator->value());
-            infoLog() << "Wert bei Diamant-Punkt: " << s3 << std::endl;
 
-            std::vector<Point2> intersect = calcIntersection(isovalue, s1, s3, s0, s2);
-
+            std::vector<Point2> intersect = calcIntersection(isovalue, s0, s3, s1, s2);
             for (auto &i : intersect)
             {
-                infoLog() << "Intersection: " << i << std::endl;
                 if (i[0] >= 0 && i[0] <= 1)
                 {
-                    infoLog() << "Intersection in D: " << bilinearTransform(fD[1], fD[3], fD[0], fD[2], i[0]) << std::endl;
+                    infoLog() << "Intersection in D: " << bilinearTransform(fD[0], fD[3], fD[1], fD[2], i[0]) << std::endl;
                 }
             }
         }
@@ -212,7 +267,7 @@ namespace
          * @param cell - main triangle to find shared edge triangle for
          * @param tempCell - triangle to compare with
          * @param points - point array for converting point indices to grid coords
-         * @return std::vector<Point2> - diamond control points
+         * @return std::vector<Point2> - diamond control points, first and last points are opposite of each other
          */
         std::vector<Point2> findDiamond(Cell cell, Cell tempCell, const ValueArray<Point2> &points)
         {
