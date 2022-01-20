@@ -73,12 +73,17 @@ namespace
             //get control points of the grid
             const ValueArray<Point2> &points = grid->points();
 
-            auto evaluator = field->makeEvaluator();
+            const auto evaluator = field->makeEvaluator();
 
+            //vector of point and indices vector for diamonds
             std::vector<std::vector<Point2>> diamondPoints;
             std::vector<std::vector<size_t>> diamondCells;
 
+            //aggregates intersection for each triangle by index
             std::unordered_map<size_t, std::vector<Point2>> trIntersectPoints;
+
+            //points for final iso segment drawing
+            std::vector<VectorF<2>> isoSegments;
 
             //find all diamonds on grid
             for (size_t i = 0; i < grid->numCells(); i++)
@@ -104,43 +109,23 @@ namespace
             //find all intersections on grid
             for (size_t i = 0; i < diamondPoints.size(); i++)
             {
-                std::vector<Point2> dP = diamondPoints[i];
-                evaluator->reset(dP[0]);
-                double s0 = norm(evaluator->value());
-                evaluator->reset(dP[1]);
-                double s1 = norm(evaluator->value());
-                evaluator->reset(dP[2]);
-                double s2 = norm(evaluator->value());
-                evaluator->reset(dP[3]);
-                double s3 = norm(evaluator->value());
+                std::vector<Point2> trIntPoints = findIntersections(diamondPoints[i], isovalue, evaluator);
 
-                //the last two points have to be opposite of each other in relation to edge e
-                std::vector<Point2> intersect = calcIntersection(isovalue, s0, s3, s1, s2);
-                int validIntersects = 0;
-                Point2 trIntPoint;
-
-                for (auto &i : intersect)
+                if (trIntPoints.size() == 2)
                 {
-                    if (i[0] >= 0 && i[0] <= 1)
-                    {
-                        validIntersects++;
-                        trIntPoint = bilinearTransform(dP[0], dP[3], dP[1], dP[2], i[0]);
-                    }
+                    Point2 newVertex = (trIntPoints[0] + trIntPoints[1]) / 2;
+                    std::vector<Point2> tempDiamond1 = {diamondPoints[i][0], diamondPoints[i][1], newVertex, diamondPoints[i][3]};
+                    std::vector<Point2> tempDiamond2 = {diamondPoints[i][0], diamondPoints[i][2], newVertex, diamondPoints[i][3]};
+                    
                 }
-
-                if (validIntersects == 2)
+                if (trIntPoints.size() == 1)
                 {
-                    //SPLITTING-FUNCTION
-                }
-                else if (validIntersects == 1)
-                {
-                    trIntersectPoints[diamondCells[i][0]].push_back(trIntPoint);
-                    trIntersectPoints[diamondCells[i][1]].push_back(trIntPoint);
+                    trIntersectPoints[diamondCells[i][0]].push_back(trIntPoints[0]);
+                    trIntersectPoints[diamondCells[i][1]].push_back(trIntPoints[0]);
                 }
             }
 
-            std::vector<VectorF<2>> isoSegments;
-
+            //add triangle intersection points to final iso segment vector
             for (auto &tr : trIntersectPoints)
             {
                 if (tr.second.size() == 2)
@@ -185,27 +170,45 @@ namespace
                                             resourcePath + "shader/line/noShading/singleColor/fragment.glsl",
                                             resourcePath + "shader/line/noShading/singleColor/geometry.glsl"));
             setGraphics("Iso-segments", isocontour);
+        }
 
-            evaluator->reset(fD[0]);
+    private:
+        template <typename T>
+        std::vector<Point2> findIntersections(std::vector<Point2> diamondPoint, double isovalue, T &evaluator)
+        {
+            std::vector<Point2> dP = diamondPoint;
+            evaluator->reset(dP[0]);
             double s0 = norm(evaluator->value());
-            evaluator->reset(fD[1]);
+            evaluator->reset(dP[1]);
             double s1 = norm(evaluator->value());
-            evaluator->reset(fD[2]);
+            evaluator->reset(dP[2]);
             double s2 = norm(evaluator->value());
-            evaluator->reset(fD[3]);
+            evaluator->reset(dP[3]);
             double s3 = norm(evaluator->value());
 
+            //the first two points have to be opposite of each other in relation to edge e
             std::vector<Point2> intersect = calcIntersection(isovalue, s0, s3, s1, s2);
+            std::vector<Point2> trIntPoints;
+
             for (auto &i : intersect)
             {
                 if (i[0] >= 0 && i[0] <= 1)
                 {
-                    infoLog() << "Intersection in D: " << bilinearTransform(fD[0], fD[3], fD[1], fD[2], i[0]) << std::endl;
+                    //mapping has to be the same, as with the intersection calc
+                    trIntPoints.push_back(bilinearTransform(dP[0], dP[3], dP[1], dP[2], i[0]));
                 }
             }
+            if (trIntPoints.size() == 2)
+            {
+                Point2 newVertex = (trIntPoints[0] + trIntPoints[1]) / 2;
+                std::vector<Point2> tempDiamond1 = {dP[0], dP[1], newVertex, dP[3]};
+                std::vector<Point2> tempDiamond2 = {dP[0], dP[2], newVertex, dP[3]};
+                //return findIntersections(tempDiamond1, isovalue, evaluator);
+            }
+
+            return trIntPoints;
         }
 
-    private:
         /**
          * @brief calc intersections of edge e with bilinear plane (hyperbola for fixed iso-value c) in mapped unit square
 
