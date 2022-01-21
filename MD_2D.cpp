@@ -149,11 +149,11 @@ namespace
             setGraphics("Iso-segments", isocontour);
         }
 
-        bool marchingDiamonds(std::unordered_map<size_t, std::vector<Point2>> trianglePoints, size_t trCellCount, double isovalue, int splitCount)
+        void marchingDiamonds(std::unordered_map<size_t, std::vector<Point2>> trianglePoints, size_t trCellCount, double isovalue, int splitCount)
         {
             if (splitCount == 0)
             {
-                return true;
+                return;
             }
             else
             {
@@ -227,9 +227,9 @@ namespace
             if (splitting)
             {
                 splitCount--;
-                return marchingDiamonds(trianglePoints, trCellCount, isovalue, splitCount);
+                marchingDiamonds(trianglePoints, trCellCount, isovalue, splitCount);
             }
-            return splitting;
+            return;
         }
 
     private:
