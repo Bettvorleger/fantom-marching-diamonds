@@ -19,6 +19,13 @@ namespace
     class MarchingDiamondsAlgorithm : public VisAlgorithm
     {
 
+    protected:
+        std::shared_ptr<const Field<2, Scalar>> field;
+        std::shared_ptr<const Grid<2>> grid;
+
+        //aggregates intersection for each triangle by index
+        std::unordered_map<size_t, std::vector<Point2>> trIntersectPoints;
+
     public:
         struct Options : public VisAlgorithm::Options
         {
@@ -26,9 +33,14 @@ namespace
                 : VisAlgorithm::Options(control)
             {
                 add<Field<2, Scalar>>("Field", "A 2D scalar field", definedOn<Grid<2>>(Grid<2>::Points));
-                add<double>("Isovalue", "The desired isovalue to show.", 1);
+                add<double>("Isovalue", "The desired isovalue to show.", 1.05);
                 add<Color>("Color", "The color of the graphics.", Color(1.0, 0.0, 0.0));
-                add<int>("Index", "Index of Diamond.", 0);
+                add<int>("Max Splitting", "Max amount of splitting steps.", 2, &acceptNumber);
+            }
+
+            static int acceptNumber(const int &i)
+            {
+                return std::max(i, 0);
             }
         };
 
@@ -37,7 +49,7 @@ namespace
             VisOutputs(fantom::VisOutputs::Control &control)
                 : VisAlgorithm::VisOutputs(control)
             {
-                addGraphics("Diamonds");
+                //addGraphics("Diamonds");
                 addGraphics("Iso-segments");
             }
         };
@@ -49,11 +61,11 @@ namespace
 
         virtual void execute(const Algorithm::Options &options, const volatile bool &abortFlag) override
         {
-            std::shared_ptr<const Field<2, Scalar>> field = options.get<Field<2, Scalar>>("Field");
+            field = options.get<Field<2, Scalar>>("Field");
             std::shared_ptr<const Function<Scalar>> function = options.get<Function<Scalar>>("Field");
             double isovalue = options.get<double>("Isovalue");
             Color color = options.get<Color>("Color");
-            int indexChoice = options.get<int>("Index");
+            int maxSplit = options.get<int>("Max Splitting");
 
             //check if input field is set
             if (!field)
@@ -62,7 +74,7 @@ namespace
                 return;
             }
 
-            std::shared_ptr<const Grid<2>> grid = std::dynamic_pointer_cast<const Grid<2>>(function->domain());
+            grid = std::dynamic_pointer_cast<const Grid<2>>(function->domain());
 
             //check if grid can be used or is correct
             if (!grid)
@@ -73,30 +85,101 @@ namespace
             //get control points of the grid
             const ValueArray<Point2> &points = grid->points();
 
-            const auto evaluator = field->makeEvaluator();
+            //control points of grid cells and initial cell count
+            std::unordered_map<size_t, std::vector<Point2>> trianglePoints;
+            size_t trCellCount = grid->numCells();
+
+            //points for final iso segment drawing
+            std::vector<VectorF<2>> isoSegments;
+
+            //load all cells into vector
+            for (size_t i = 0; i < trCellCount; i++)
+            {
+                Cell cell = grid->cell(i);
+                trianglePoints[i] = std::vector<Point2>({points[cell.index(0)], points[cell.index(1)], points[cell.index(2)]});
+            }
+
+            marchingDiamonds(trianglePoints, trCellCount, isovalue, maxSplit);
+
+            //add triangle intersection points to final iso segment vector
+            for (auto &tr : trIntersectPoints)
+            {
+                if (tr.second.size() == 2)
+                {
+                    isoSegments.insert(isoSegments.end(), {VectorF<2>(tr.second[0]), VectorF<2>(tr.second[1])});
+                }
+            }
+
+            /************LOGGING***************/
+
+            /*std::vector<VectorF<2>> vertGrid;
+            std::vector<Point2> fD = diamondPoints[indexChoice];
+
+            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[0]), VectorF<2>(fD[1])});
+            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[0]), VectorF<2>(fD[2])});
+            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[3]), VectorF<2>(fD[1])});
+            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[3]), VectorF<2>(fD[2])});
+*/
+            if (abortFlag)
+            {
+                return;
+            }
+
+            auto const &system = graphics::GraphicsSystem::instance();
+            std::string resourcePath = PluginRegistrationService::getInstance().getResourcePath("utils/Graphics");
+            /*
+            std::shared_ptr<graphics::Drawable> gridLines = system.makePrimitive(
+                graphics::PrimitiveConfig{graphics::RenderPrimitives::LINES}
+                    .vertexBuffer("in_vertex", system.makeBuffer(vertGrid))
+                    .uniform("u_lineWidth", 1.0f)
+                    .uniform("u_color", color),
+                system.makeProgramFromFiles(resourcePath + "shader/line/noShading/singleColor/vertex.glsl",
+                                            resourcePath + "shader/line/noShading/singleColor/fragment.glsl",
+                                            resourcePath + "shader/line/noShading/singleColor/geometry.glsl"));
+            setGraphics("Diamonds", gridLines);
+*/
+            std::shared_ptr<graphics::Drawable> isocontour = system.makePrimitive(
+                graphics::PrimitiveConfig{graphics::RenderPrimitives::LINES}
+                    .vertexBuffer("in_vertex", system.makeBuffer(isoSegments))
+                    .uniform("u_lineWidth", 1.5f)
+                    .uniform("u_color", color),
+                system.makeProgramFromFiles(resourcePath + "shader/line/noShading/singleColor/vertex.glsl",
+                                            resourcePath + "shader/line/noShading/singleColor/fragment.glsl",
+                                            resourcePath + "shader/line/noShading/singleColor/geometry.glsl"));
+            setGraphics("Iso-segments", isocontour);
+        }
+
+        bool marchingDiamonds(std::unordered_map<size_t, std::vector<Point2>> trianglePoints, size_t trCellCount, double isovalue, int splitCount)
+        {
+            if (splitCount == 0)
+            {
+                return true;
+            }
+            else
+            {
+                trIntersectPoints.clear();
+            }
+
+            auto evaluator = field->makeEvaluator();
+
+            //check if splitting was neccesary
+            bool splitting = false;
 
             //vector of point and indices vector for diamonds
             std::vector<std::vector<Point2>> diamondPoints;
             std::vector<std::vector<size_t>> diamondCells;
 
-            //aggregates intersection for each triangle by index
-            std::unordered_map<size_t, std::vector<Point2>> trIntersectPoints;
-
-            //points for final iso segment drawing
-            std::vector<VectorF<2>> isoSegments;
-
             //find all diamonds on grid
-            for (size_t i = 0; i < grid->numCells(); i++)
+            for (size_t i = 0; i < trCellCount; i++)
             {
-                Cell cell = grid->cell(i);
-
-                for (size_t j = 1; j < grid->numCells(); j++)
+                if (trianglePoints[i].empty())
+                    continue;
+                for (size_t j = 1; j < trCellCount; j++)
                 {
-                    if (i >= j)
+                    if (i >= j || trianglePoints[j].empty())
                         continue;
 
-                    Cell tempCell = grid->cell(j);
-                    std::vector<Point2> diamP = findDiamond(cell, tempCell, points); //new diamond vector element
+                    std::vector<Point2> diamP = findDiamond(trianglePoints[i], trianglePoints[j]); //new diamond vector element
 
                     if (!diamP.empty())
                     {
@@ -113,10 +196,26 @@ namespace
 
                 if (trIntPoints.size() == 2)
                 {
+                    splitting = true;
+
                     Point2 newVertex = (trIntPoints[0] + trIntPoints[1]) / 2;
                     std::vector<Point2> tempDiamond1 = {diamondPoints[i][0], diamondPoints[i][1], newVertex, diamondPoints[i][3]};
                     std::vector<Point2> tempDiamond2 = {diamondPoints[i][0], diamondPoints[i][2], newVertex, diamondPoints[i][3]};
-                    
+
+                    std::vector<Point2> newTriangle1 = {diamondPoints[i][0], diamondPoints[i][1], newVertex};
+                    std::vector<Point2> newTriangle2 = {diamondPoints[i][0], diamondPoints[i][2], newVertex};
+                    std::vector<Point2> newTriangle3 = {diamondPoints[i][3], diamondPoints[i][1], newVertex};
+                    std::vector<Point2> newTriangle4 = {diamondPoints[i][3], diamondPoints[i][2], newVertex};
+
+                    trianglePoints.erase(diamondCells[i][0]);
+                    trianglePoints.erase(diamondCells[i][1]);
+
+                    trianglePoints[trCellCount + 1] = newTriangle1;
+                    trianglePoints[trCellCount + 2] = newTriangle2;
+                    trianglePoints[trCellCount + 3] = newTriangle3;
+                    trianglePoints[trCellCount + 4] = newTriangle4;
+
+                    trCellCount += 4;
                 }
                 if (trIntPoints.size() == 1)
                 {
@@ -125,51 +224,12 @@ namespace
                 }
             }
 
-            //add triangle intersection points to final iso segment vector
-            for (auto &tr : trIntersectPoints)
+            if (splitting)
             {
-                if (tr.second.size() == 2)
-                {
-                    isoSegments.insert(isoSegments.end(), {VectorF<2>(tr.second[0]), VectorF<2>(tr.second[1])});
-                }
+                splitCount--;
+                return marchingDiamonds(trianglePoints, trCellCount, isovalue, splitCount);
             }
-
-            /************LOGGING***************/
-            std::vector<VectorF<2>> vertGrid;
-            std::vector<Point2> fD = diamondPoints[indexChoice];
-
-            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[0]), VectorF<2>(fD[1])});
-            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[0]), VectorF<2>(fD[2])});
-            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[3]), VectorF<2>(fD[1])});
-            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[3]), VectorF<2>(fD[2])});
-
-            if (abortFlag)
-            {
-                return;
-            }
-
-            auto const &system = graphics::GraphicsSystem::instance();
-            std::string resourcePath = PluginRegistrationService::getInstance().getResourcePath("utils/Graphics");
-
-            std::shared_ptr<graphics::Drawable> gridLines = system.makePrimitive(
-                graphics::PrimitiveConfig{graphics::RenderPrimitives::LINES}
-                    .vertexBuffer("in_vertex", system.makeBuffer(vertGrid))
-                    .uniform("u_lineWidth", 1.0f)
-                    .uniform("u_color", color),
-                system.makeProgramFromFiles(resourcePath + "shader/line/noShading/singleColor/vertex.glsl",
-                                            resourcePath + "shader/line/noShading/singleColor/fragment.glsl",
-                                            resourcePath + "shader/line/noShading/singleColor/geometry.glsl"));
-            setGraphics("Diamonds", gridLines);
-
-            std::shared_ptr<graphics::Drawable> isocontour = system.makePrimitive(
-                graphics::PrimitiveConfig{graphics::RenderPrimitives::LINES}
-                    .vertexBuffer("in_vertex", system.makeBuffer(isoSegments))
-                    .uniform("u_lineWidth", 1.5f)
-                    .uniform("u_color", color),
-                system.makeProgramFromFiles(resourcePath + "shader/line/noShading/singleColor/vertex.glsl",
-                                            resourcePath + "shader/line/noShading/singleColor/fragment.glsl",
-                                            resourcePath + "shader/line/noShading/singleColor/geometry.glsl"));
-            setGraphics("Iso-segments", isocontour);
+            return splitting;
         }
 
     private:
@@ -208,6 +268,31 @@ namespace
 
             return trIntPoints;
         }
+
+        /*
+        void splitDiamond(std::vector<Point2> diamondPoint, Point2 newVertex, double isovalue, T &evaluator)
+        {
+            std::vector<Point2> tempDiamond1 = {diamondPoints[i][0], diamondPoints[i][1], newVertex, diamondPoints[i][3]};
+            std::vector<Point2> tempDiamond2 = {diamondPoints[i][0], diamondPoints[i][2], newVertex, diamondPoints[i][3]};
+            Point2 newVertex;
+
+            for (int i = 0; i < 3; i++)
+            {
+                std::vector<Point2> trIntPoints = findIntersections(tempDiamond1, isovalue, evaluator);
+
+                if (trIntPoints.size() == 2)
+                {
+                    newVertex = (trIntPoints[0] + trIntPoints[1]) / 2;
+                }
+                else if (trIntPoints.size() == 1)
+                {
+                    trIntersectPoints[diamondCells[i][0]].push_back(trIntPoints[0]);
+                    trIntersectPoints[diamondCells[i][1]].push_back(trIntPoints[0]);
+                    break;
+                }
+            }
+        }
+        */
 
         /**
          * @brief calc intersections of edge e with bilinear plane (hyperbola for fixed iso-value c) in mapped unit square
@@ -272,41 +357,41 @@ namespace
          * @param points - point array for converting point indices to grid coords
          * @return std::vector<Point2> - diamond control points, first and last points are opposite of each other
          */
-        std::vector<Point2> findDiamond(Cell cell, Cell tempCell, const ValueArray<Point2> &points)
+        std::vector<Point2> findDiamond(std::vector<Point2> trPoints, std::vector<Point2> trTempPoints)
         {
-            size_t i0, i1, i2, i3;
+            Point2 d0, d1, d2, d3;
 
-            size_t t0 = tempCell.index(0);
-            size_t t1 = tempCell.index(1);
-            size_t t2 = tempCell.index(2);
+            Point2 t0 = trTempPoints[0];
+            Point2 t1 = trTempPoints[1];
+            Point2 t2 = trTempPoints[2];
 
             for (int p = 0; p < 3; p++)
             {
-                i0 = cell.index(p);
-                i1 = cell.index((p + 1) % 3);
-                i2 = cell.index((p + 2) % 3);
+                d0 = trPoints[p];
+                d1 = trPoints[(p + 1) % 3];
+                d2 = trPoints[(p + 2) % 3];
 
-                if (i0 == t0)
+                if (d0 == t0)
                 {
-                    if (i1 == t1)
+                    if (d1 == t1)
                     { //i2 opposite of i3
-                        i3 = t2;
-                        return std::vector<Point2>({Point2(points[i2]), Point2(points[i0]), Point2(points[i1]), Point2(points[i3])});
+                        d3 = t2;
+                        return std::vector<Point2>({d2, d0, d1, d3});
                     }
-                    else if (i2 == t1)
+                    else if (d2 == t1)
                     { //i1 opposite of i3
-                        i3 = t2;
-                        return std::vector<Point2>({Point2(points[i1]), Point2(points[i0]), Point2(points[i2]), Point2(points[i3])});
+                        d3 = t2;
+                        return std::vector<Point2>({d1, d0, d2, d3});
                     }
-                    else if (i1 == t2)
+                    else if (d1 == t2)
                     { //i2 opposite of i3
-                        i3 = t1;
-                        return std::vector<Point2>({Point2(points[i2]), Point2(points[i0]), Point2(points[i1]), Point2(points[i3])});
+                        d3 = t1;
+                        return std::vector<Point2>({d2, d0, d1, d3});
                     }
-                    else if (i2 == t2)
+                    else if (d2 == t2)
                     { //i1 opposite of i3
-                        i3 = t1;
-                        return std::vector<Point2>({Point2(points[i1]), Point2(points[i0]), Point2(points[i2]), Point2(points[i3])});
+                        d3 = t1;
+                        return std::vector<Point2>({d1, d0, d2, d3});
                     }
                 }
             }
@@ -320,7 +405,8 @@ namespace
          * @param y - coord of intersection of edge with hyperbola in unit square
          * @return Point2 - intersection point in reference space of dimaond R
          */
-        Point2 bilinearTransformUTR(double y)
+        Point2
+        bilinearTransformUTR(double y)
         {
             Point2 v1 = {0, 2};
             Point2 v2 = {0, -2};
