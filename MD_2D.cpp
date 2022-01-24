@@ -9,8 +9,8 @@
 
 #include <stdexcept>
 #include <vector>
+#include <map>
 #include <unordered_map>
-#include <set>
 
 using namespace fantom;
 
@@ -24,9 +24,6 @@ namespace
         std::shared_ptr<const Field<2, Scalar>> field;
         std::shared_ptr<const Grid<2>> grid;
 
-        //aggregates intersection for each triangle by index
-        std::unordered_map<size_t, std::vector<Point2>> trIntersectPoints;
-
     public:
         struct Options : public VisAlgorithm::Options
         {
@@ -36,7 +33,7 @@ namespace
                 add<Field<2, Scalar>>("Field", "A 2D scalar field", definedOn<Grid<2>>(Grid<2>::Points));
                 add<double>("Isovalue", "The desired isovalue to show.", 1.05);
                 add<Color>("Color", "The color of the graphics.", Color(1.0, 0.0, 0.0));
-                add<int>("Max Splitting", "Max amount of splitting steps.", 2, &acceptNumber);
+                add<int>("Max Splitting", "Max amount of splitting steps.", 0, &acceptNumber);
             }
 
             static int acceptNumber(const int &i)
@@ -87,8 +84,11 @@ namespace
             const ValueArray<Point2> &points = grid->points();
 
             //control points of grid cells and initial cell count
-            std::unordered_map<size_t, std::vector<Point2>> trianglePoints;
+            std::map<size_t, std::vector<Point2>> trianglePoints;
             size_t trCellCount = grid->numCells();
+
+            //aggregates intersection for each triangle by index
+            std::unordered_map<size_t, std::vector<Point2>> trIntersectPoints;
 
             //points for final iso segment drawing
             std::vector<VectorF<2>> isoSegments;
@@ -100,7 +100,7 @@ namespace
                 trianglePoints[i] = std::vector<Point2>({points[cell.index(0)], points[cell.index(1)], points[cell.index(2)]});
             }
 
-            marchingDiamonds(trianglePoints, trCellCount, isovalue, maxSplit);
+            trIntersectPoints = marchingDiamonds(trianglePoints, trIntersectPoints, trCellCount, isovalue, maxSplit+1);
 
             //add triangle intersection points to final iso segment vector
             for (auto &tr : trIntersectPoints)
@@ -111,16 +111,6 @@ namespace
                 }
             }
 
-            /************LOGGING***************/
-
-            /*std::vector<VectorF<2>> vertGrid;
-            std::vector<Point2> fD = diamondPoints[indexChoice];
-
-            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[0]), VectorF<2>(fD[1])});
-            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[0]), VectorF<2>(fD[2])});
-            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[3]), VectorF<2>(fD[1])});
-            vertGrid.insert(vertGrid.end(), {VectorF<2>(fD[3]), VectorF<2>(fD[2])});
-*/
             if (abortFlag)
             {
                 return;
@@ -128,21 +118,11 @@ namespace
 
             auto const &system = graphics::GraphicsSystem::instance();
             std::string resourcePath = PluginRegistrationService::getInstance().getResourcePath("utils/Graphics");
-            /*
-            std::shared_ptr<graphics::Drawable> gridLines = system.makePrimitive(
-                graphics::PrimitiveConfig{graphics::RenderPrimitives::LINES}
-                    .vertexBuffer("in_vertex", system.makeBuffer(vertGrid))
-                    .uniform("u_lineWidth", 1.0f)
-                    .uniform("u_color", color),
-                system.makeProgramFromFiles(resourcePath + "shader/line/noShading/singleColor/vertex.glsl",
-                                            resourcePath + "shader/line/noShading/singleColor/fragment.glsl",
-                                            resourcePath + "shader/line/noShading/singleColor/geometry.glsl"));
-            setGraphics("Diamonds", gridLines);
-*/
+
             std::shared_ptr<graphics::Drawable> isocontour = system.makePrimitive(
                 graphics::PrimitiveConfig{graphics::RenderPrimitives::LINES}
                     .vertexBuffer("in_vertex", system.makeBuffer(isoSegments))
-                    .uniform("u_lineWidth", 1.5f)
+                    .uniform("u_lineWidth", 2.0f)
                     .uniform("u_color", color),
                 system.makeProgramFromFiles(resourcePath + "shader/line/noShading/singleColor/vertex.glsl",
                                             resourcePath + "shader/line/noShading/singleColor/fragment.glsl",
@@ -150,171 +130,92 @@ namespace
             setGraphics("Iso-segments", isocontour);
         }
 
-        void marchingDiamonds(std::unordered_map<size_t, std::vector<Point2>> trianglePoints, size_t trCellCount, double isovalue, int maxSplit, int recCount = 2)
+        template <typename T, typename U>
+        std::unordered_map<size_t, std::vector<Point2>> marchingDiamonds(T trianglePoints, U trIntersectPoints, size_t trCellCount, double isovalue, int splitCount)
         {
-            if (recCount == 0)
+            if (splitCount == 0)
             {
-                return;
+                return trIntersectPoints;
             }
-            else
-            {
-                trIntersectPoints.clear();
-            }
+            trIntersectPoints.clear();
+
+            //vector of point and indices vector for diamonds
+            std::map<std::vector<size_t>, std::vector<Point2>> diamondPoints;
 
             auto evaluator = field->makeEvaluator();
 
             //check if splitting was neccesary
             bool splitting = false;
 
-            //vector of point and indices vector for diamonds
-            std::vector<std::vector<Point2>> diamondPoints;
-            std::vector<std::vector<size_t>> diamondCells;
-
             //find all diamonds on grid
-            for (size_t i = 0; i < trCellCount; i++)
+            for (auto &i : trianglePoints)
             {
-                if (trianglePoints[i].empty())
-                    continue;
-                for (size_t j = 1; j < trCellCount; j++)
+                for (auto const &j : trianglePoints)
                 {
-                    if (i >= j || trianglePoints[j].empty())
+                    if (i.first >= j.first)
                         continue;
-
-                    std::vector<Point2> diamP = findDiamond(trianglePoints[i], trianglePoints[j]); //new diamond vector element
+                    std::vector<Point2> diamP = findDiamond(i.second, j.second); //new diamond vector element
 
                     if (!diamP.empty())
                     {
-                        diamondPoints.push_back(diamP);
-                        diamondCells.push_back({i, j});
+                        diamondPoints[{i.first, j.first}] = diamP;
                     }
                 }
             }
 
             //find all intersections on grid
-            for (size_t i = 0; i < diamondPoints.size(); i++)
+            for (auto &dP : diamondPoints)
             {
-                std::vector<Point2> trIntPoints = findIntersections(diamondPoints[i], isovalue, evaluator);
+                std::vector<Point2> trIntPoints = findIntersections(dP.second, isovalue, evaluator);
 
-                if (trIntPoints.size() == 2 && recCount > 1)
+                if (trIntPoints.size() == 2)
                 {
                     splitting = true;
 
                     Point2 newVertex = (trIntPoints[0] + trIntPoints[1]) / 2;
+                    std::vector<Point2> newDiamond1 = {dP.second[0], dP.second[1], newVertex, dP.second[3]}; //triangle 1 + 3
+                    std::vector<Point2> newDiamond2 = {dP.second[0], dP.second[2], newVertex, dP.second[3]}; //triangle 2 + 4
+                    std::vector<Point2> newDiamond3 = {dP.second[1], dP.second[0], newVertex, dP.second[2]}; //triangle 1 + 2
+                    std::vector<Point2> newDiamond4 = {dP.second[1], dP.second[3], newVertex, dP.second[2]}; //triangle 3 + 4
+
+                    std::vector<Point2> newTriangle1 = {dP.second[0], dP.second[1], newVertex};
+                    std::vector<Point2> newTriangle2 = {dP.second[0], dP.second[2], newVertex};
+                    std::vector<Point2> newTriangle3 = {dP.second[3], dP.second[1], newVertex};
+                    std::vector<Point2> newTriangle4 = {dP.second[3], dP.second[2], newVertex};
+
+                    trianglePoints.erase(dP.first[0]);
+                    trianglePoints.erase(dP.first[1]);
+
+                    trianglePoints[trCellCount + 1] = newTriangle1;
+                    trianglePoints[trCellCount + 2] = newTriangle2;
+                    trianglePoints[trCellCount + 3] = newTriangle3;
+                    trianglePoints[trCellCount + 4] = newTriangle4;
 
                     /*
-                    std::vector<Point2> tempDiamond1 = {diamondPoints[0], diamondPoints[1], newVertex, diamondPoints[3]};
-                    std::vector<Point2> tempDiamond2 = {diamondPoints[0], diamondPoints[2], newVertex, diamondPoints[3]};
-                    std::vector<Point2> tempDiamond3 = {diamondPoints[1], diamondPoints[0], newVertex, diamondPoints[2]};
-                    std::vector<Point2> tempDiamond4 = {diamondPoints[1], diamondPoints[3], newVertex, diamondPoints[2]};
+                    newDiamondPoints.push_back(newDiamond1);
+                    newDiamondPoints.push_back(newDiamond2);
+                    newDiamondPoints.push_back(newDiamond3);
+                    newDiamondPoints.push_back(newDiamond4);
 
-                    std::vector<Point2> newTriangle1 = {diamondPoints[i][0], diamondPoints[i][1], newVertex};
-                    std::vector<Point2> newTriangle2 = {diamondPoints[i][0], diamondPoints[i][2], newVertex};
-                    std::vector<Point2> newTriangle3 = {diamondPoints[i][3], diamondPoints[i][1], newVertex};
-                    std::vector<Point2> newTriangle4 = {diamondPoints[i][3], diamondPoints[i][2], newVertex};
+                    newDiamondCells.push_back({trCellCount + 1, trCellCount + 3});
+                    newDiamondCells.push_back({trCellCount + 2, trCellCount + 4});
+                    newDiamondCells.push_back({trCellCount + 1, trCellCount + 2});
+                    newDiamondCells.push_back({trCellCount + 3, trCellCount + 4});
                     */
-                    std::vector<std::vector<Point2>> newTriangles;
-                    std::vector<int> splitCount = {maxSplit, maxSplit, maxSplit, maxSplit};
 
-                    newTriangles = splitDiamond(diamondPoints[i], newTriangles, newVertex, isovalue, splitCount);
-
-                    trianglePoints.erase(diamondCells[i][0]);
-                    trianglePoints.erase(diamondCells[i][1]);
-
-                    for (size_t j = 0; j < newTriangles.size(); j++)
-                    {
-                        trCellCount += 1;
-                        trianglePoints[trCellCount] = newTriangles[j];
-                    }
+                    trCellCount += 4;
                 }
                 if (trIntPoints.size() == 1)
                 {
-                    trIntersectPoints[diamondCells[i][0]].push_back(trIntPoints[0]);
-                    trIntersectPoints[diamondCells[i][1]].push_back(trIntPoints[0]);
+                    trIntersectPoints[dP.first[0]].push_back(trIntPoints[0]);
+                    trIntersectPoints[dP.first[1]].push_back(trIntPoints[0]);
                 }
             }
 
             if (splitting)
             {
-                marchingDiamonds(trianglePoints, trCellCount, isovalue, maxSplit, recCount - 1);
+                return marchingDiamonds(trianglePoints, trIntersectPoints, trCellCount, isovalue, splitCount - 1);
             }
-            return;
-        }
-
-        std::vector<std::vector<Point2>> splitDiamond(std::vector<Point2> diamondPoints, std::vector<std::vector<Point2>> newTriangles, Point2 newVertex, double isovalue, std::vector<int> splitCount)
-        {
-            if (splitCount[0] == 0 && splitCount[1] == 0 && splitCount[2] == 0 && splitCount[3] == 0)
-            {
-                return newTriangles;
-            }
-
-            std::vector<Point2> newTriangle1 = {diamondPoints[0], diamondPoints[1], newVertex};
-            std::vector<Point2> newTriangle2 = {diamondPoints[0], diamondPoints[2], newVertex};
-            std::vector<Point2> newTriangle3 = {diamondPoints[3], diamondPoints[1], newVertex};
-            std::vector<Point2> newTriangle4 = {diamondPoints[3], diamondPoints[2], newVertex};
-
-            std::vector<Point2> tempDiamond1 = {diamondPoints[0], diamondPoints[1], newVertex, diamondPoints[3]}; //triangle 1 + 3
-            std::vector<Point2> tempDiamond2 = {diamondPoints[0], diamondPoints[2], newVertex, diamondPoints[3]}; //triangle 2 + 4
-            std::vector<Point2> tempDiamond3 = {diamondPoints[1], diamondPoints[0], newVertex, diamondPoints[2]}; //triangle 1 + 2
-            std::vector<Point2> tempDiamond4 = {diamondPoints[1], diamondPoints[3], newVertex, diamondPoints[2]}; //triangle 3 + 4
-
-            auto evaluator = field->makeEvaluator();
-
-            std::vector<Point2> trIntPoints = findIntersections(tempDiamond1, isovalue, evaluator);
-
-            if (trIntPoints.size() == 2)
-            {
-                newVertex = (trIntPoints[0] + trIntPoints[1]) / 2;
-                splitCount.at(0)--;
-                splitDiamond(tempDiamond1, newTriangles, newVertex, isovalue, splitCount);
-            }
-            else if (trIntPoints.size() == 1)
-            {
-                newTriangles.push_back(newTriangle1);
-                newTriangles.push_back(newTriangle3);
-            }
-
-            trIntPoints = findIntersections(tempDiamond2, isovalue, evaluator);
-
-            if (trIntPoints.size() == 2)
-            {
-                newVertex = (trIntPoints[0] + trIntPoints[1]) / 2;
-                splitCount.at(1)--;
-                splitDiamond(tempDiamond2, newTriangles, newVertex, isovalue, splitCount);
-            }
-            else if (trIntPoints.size() == 1)
-            {
-                newTriangles.push_back(newTriangle2);
-                newTriangles.push_back(newTriangle4);
-            }
-
-            trIntPoints = findIntersections(tempDiamond3, isovalue, evaluator);
-
-            if (trIntPoints.size() == 2)
-            {
-                newVertex = (trIntPoints[0] + trIntPoints[1]) / 2;
-                splitCount.at(2)--;
-                splitDiamond(tempDiamond3, newTriangles, newVertex, isovalue, splitCount);
-            }
-            else if (trIntPoints.size() == 1)
-            {
-                newTriangles.push_back(newTriangle1);
-                newTriangles.push_back(newTriangle2);
-            }
-
-            trIntPoints = findIntersections(tempDiamond4, isovalue, evaluator);
-
-            if (trIntPoints.size() == 2)
-            {
-                newVertex = (trIntPoints[0] + trIntPoints[1]) / 2;
-                splitCount.at(3)--;
-                splitDiamond(tempDiamond4, newTriangles, newVertex, isovalue, splitCount);
-            }
-            else if (trIntPoints.size() == 1)
-            {
-                newTriangles.push_back(newTriangle3);
-                newTriangles.push_back(newTriangle4);
-            }
-            return newTriangles;
         }
 
     private:
@@ -332,7 +233,7 @@ namespace
             double s3 = norm(evaluator->value());
 
             //the first two points have to be opposite of each other in relation to edge e
-            std::vector<Point2> intersect = calcIntersection(isovalue, s0, s3, s1, s2);
+            std::vector<Point2> intersect = calcIntersection(isovalue, s3, s0, s2, s1);
             std::vector<Point2> trIntPoints;
 
             for (auto &i : intersect)
@@ -340,7 +241,7 @@ namespace
                 if (i[0] >= 0 && i[0] <= 1)
                 {
                     //mapping has to be the same, as with the intersection calc
-                    trIntPoints.push_back(bilinearTransform(dP[0], dP[3], dP[1], dP[2], i[0]));
+                    trIntPoints.push_back(bilinearTransform(dP[3], dP[0], dP[2], dP[1], i[0]));
                 }
             }
             if (trIntPoints.size() == 2)
@@ -353,31 +254,6 @@ namespace
 
             return trIntPoints;
         }
-
-        /*
-        void splitDiamond(std::vector<Point2> diamondPoint, Point2 newVertex, double isovalue, T &evaluator)
-        {
-            std::vector<Point2> tempDiamond1 = {diamondPoints[i][0], diamondPoints[i][1], newVertex, diamondPoints[i][3]};
-            std::vector<Point2> tempDiamond2 = {diamondPoints[i][0], diamondPoints[i][2], newVertex, diamondPoints[i][3]};
-            Point2 newVertex;
-
-            for (int i = 0; i < 3; i++)
-            {
-                std::vector<Point2> trIntPoints = findIntersections(tempDiamond1, isovalue, evaluator);
-
-                if (trIntPoints.size() == 2)
-                {
-                    newVertex = (trIntPoints[0] + trIntPoints[1]) / 2;
-                }
-                else if (trIntPoints.size() == 1)
-                {
-                    trIntersectPoints[diamondCells[i][0]].push_back(trIntPoints[0]);
-                    trIntersectPoints[diamondCells[i][1]].push_back(trIntPoints[0]);
-                    break;
-                }
-            }
-        }
-        */
 
         /**
          * @brief calc intersections of edge e with bilinear plane (hyperbola for fixed iso-value c) in mapped unit square
@@ -445,38 +321,42 @@ namespace
         std::vector<Point2> findDiamond(std::vector<Point2> trPoints, std::vector<Point2> trTempPoints)
         {
             Point2 d0, d1, d2, d3;
+            Point2 t0, t1, t2;
 
-            Point2 t0 = trTempPoints[0];
-            Point2 t1 = trTempPoints[1];
-            Point2 t2 = trTempPoints[2];
-
-            for (int p = 0; p < 3; p++)
+            for (int t = 0; t < 3; t++)
             {
-                d0 = trPoints[p];
-                d1 = trPoints[(p + 1) % 3];
-                d2 = trPoints[(p + 2) % 3];
+                t0 = trTempPoints[t];
+                t1 = trTempPoints[(t + 1) % 3];
+                t2 = trTempPoints[(t + 2) % 3];
 
-                if (d0 == t0)
+                for (int p = 0; p < 3; p++)
                 {
-                    if (d1 == t1)
-                    { //i2 opposite of i3
-                        d3 = t2;
-                        return std::vector<Point2>({d2, d0, d1, d3});
-                    }
-                    else if (d2 == t1)
-                    { //i1 opposite of i3
-                        d3 = t2;
-                        return std::vector<Point2>({d1, d0, d2, d3});
-                    }
-                    else if (d1 == t2)
-                    { //i2 opposite of i3
-                        d3 = t1;
-                        return std::vector<Point2>({d2, d0, d1, d3});
-                    }
-                    else if (d2 == t2)
-                    { //i1 opposite of i3
-                        d3 = t1;
-                        return std::vector<Point2>({d1, d0, d2, d3});
+                    d0 = trPoints[p];
+                    d1 = trPoints[(p + 1) % 3];
+                    d2 = trPoints[(p + 2) % 3];
+
+                    if (d0 == t0)
+                    {
+                        if (d1 == t1)
+                        { //d2 opposite of d3
+                            d3 = t2;
+                            return std::vector<Point2>({d2, d0, d1, d3});
+                        }
+                        else if (d2 == t1)
+                        { //d1 opposite of d3
+                            d3 = t2;
+                            return std::vector<Point2>({d1, d0, d2, d3});
+                        }
+                        else if (d1 == t2)
+                        { //d2 opposite of d3
+                            d3 = t1;
+                            return std::vector<Point2>({d2, d0, d1, d3});
+                        }
+                        else if (d2 == t2)
+                        { //d1 opposite of d3
+                            d3 = t1;
+                            return std::vector<Point2>({d1, d0, d2, d3});
+                        }
                     }
                 }
             }
@@ -490,8 +370,7 @@ namespace
          * @param y - coord of intersection of edge with hyperbola in unit square
          * @return Point2 - intersection point in reference space of dimaond R
          */
-        Point2
-        bilinearTransformUTR(double y)
+        Point2 bilinearTransformUTR(double y)
         {
             Point2 v1 = {0, 2};
             Point2 v2 = {0, -2};
