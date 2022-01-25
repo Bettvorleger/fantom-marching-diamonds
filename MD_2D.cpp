@@ -478,5 +478,5 @@ namespace
     };
 
     AlgorithmRegister<MarchingDiamondsAlgorithm> dummy("Iso-Surface/MarchingDiamonds2D",
-                                                       "Show iso-segment in 2D grid for given isovalue.");
+                                                       "Show scalar values in 2D grid over certain threshold.");
 } // namespace
