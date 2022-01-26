@@ -162,12 +162,12 @@ namespace
             std::map<size_t, std::vector<Point2>> trIndices;
 
             //find all diamonds on grid
-            for (auto &i : newTriangles)
+            for (auto &i : trianglePoints)
             {
-                for (auto &j : trianglePoints)
+                for (auto &j : newTriangles)
                 {
                     //avoid duplicate diamonds by only using the "upper" part of the symmetric matrix on first call
-                    if (i.first >= j.first && newTriangles.size() == trianglePoints.size())
+                    if (i.first >= j.first)
                         continue;
                     std::vector<Point2> diamP = findDiamond(i.second, j.second); //new diamond vector element
 
@@ -176,17 +176,19 @@ namespace
                         //add new diamond point to map by triangle indices used
                         diamondPoints[{i.first, j.first}] = diamP;
 
-                        //add only without splitting
-                        if (newTriangles.size() == trianglePoints.size())
-                        {
-                            trIndices[i.first].push_back(diamP[1]);
-                            trIndices[i.first].push_back(diamP[2]);
-                            trIndices[j.first].push_back(diamP[1]);
-                            trIndices[j.first].push_back(diamP[2]);
-                        }
+                        //add for edge cases
+                        trIndices[i.first].push_back(diamP[1]);
+                        trIndices[i.first].push_back(diamP[2]);
+                        trIndices[j.first].push_back(diamP[1]);
+                        trIndices[j.first].push_back(diamP[2]);
                     }
                 }
             }
+
+            //add new triangle points now for later splitting
+            trianglePoints = newTriangles;
+            //reset for new triangles to be added from splitting
+            newTriangles.clear();
 
             //find all intersections on grid-edge triangles without diamonds on all three edges
             for (auto &trI : trIndices)
@@ -196,8 +198,7 @@ namespace
                     trIntersectPoints[trI.first].push_back(intersectPoint);
             }
 
-            //reset for new triangles to be added from splitting
-            newTriangles.clear();
+            std::map<std::vector<size_t>, std::vector<Point2>> newDiamondPoints;
 
             //find all intersections on grid, using constant iterator for manipulating the original structure
             for (auto dP = diamondPoints.cbegin(); dP != diamondPoints.cend();)
@@ -212,25 +213,23 @@ namespace
                     //new point halfway between the two intersections
                     Point2 newVertex = (trIntPoints[0] + trIntPoints[1]) / 2;
 
-                    //new triangles created through splitting with new vertex
-                    std::vector<Point2> newTriangle1 = {dP->second[0], dP->second[1], newVertex};
-                    std::vector<Point2> newTriangle2 = {dP->second[0], dP->second[2], newVertex};
-                    std::vector<Point2> newTriangle3 = {dP->second[3], dP->second[1], newVertex};
-                    std::vector<Point2> newTriangle4 = {dP->second[3], dP->second[2], newVertex};
+                    //new triangles and diamonds created through splitting with new vertex, added by expanding cell indices
+                    trianglePoints[trCellCount] = {dP->second[0], dP->second[1], newVertex};
+                    trianglePoints[trCellCount + 1] = {dP->second[0], dP->second[2], newVertex};
+                    trianglePoints[trCellCount + 2] = {dP->second[3], dP->second[1], newVertex};
+                    trianglePoints[trCellCount + 3] = {dP->second[3], dP->second[2], newVertex};
+
+                    newDiamondPoints[{trCellCount, trCellCount + 2}] = {dP->second[0], dP->second[1], newVertex, dP->second[3]};     //triangle 0 + 2
+                    newDiamondPoints[{trCellCount + 1, trCellCount + 3}] = {dP->second[0], dP->second[2], newVertex, dP->second[3]}; //triangle 1 + 3
+                    newDiamondPoints[{trCellCount, trCellCount + 1}] = {dP->second[1], dP->second[0], newVertex, dP->second[2]};     //triangle 0 + 1
+                    newDiamondPoints[{trCellCount + 2, trCellCount + 3}] = {dP->second[1], dP->second[3], newVertex, dP->second[2]}; //triangle 2 + 3
+
+                    trCellCount += 4;
 
                     //erase the two original triangles and found diamond
                     trianglePoints.erase(dP->first[0]);
                     trianglePoints.erase(dP->first[1]);
                     dP = diamondPoints.erase(dP);
-
-                    //add new triangles by expanding cell indices
-                    newTriangles[trCellCount + 1] = newTriangle1;
-                    newTriangles[trCellCount + 2] = newTriangle2;
-                    newTriangles[trCellCount + 3] = newTriangle3;
-                    newTriangles[trCellCount + 4] = newTriangle4;
-
-                    trCellCount += 4;
-
                     continue;
                 }
                 else if (trIntPoints.size() == 1)
@@ -242,9 +241,12 @@ namespace
                 ++dP;
             }
 
+            //merge old with new triangles because we want to check all non-splitted triangles against all non-splitted PLUS the splitted triangles
+            newTriangles.insert(trianglePoints.begin(), trianglePoints.end());
+
             if (splitting)
             {
-                return marchingDiamonds(trianglePoints, trIntersectPoints, diamondPoints, newTriangles, trCellCount, isovalue, splitCount - 1);
+                return marchingDiamonds(trianglePoints, trIntersectPoints, newDiamondPoints, newTriangles, trCellCount, isovalue, splitCount - 1);
             }
             return trIntersectPoints;
         }
@@ -298,6 +300,8 @@ namespace
                    \  /                                     s3----s0
                     s2                  
         
+            solve for y in c = (s0+s1)(y-y^2)+s3(1-y)^2+s2*y^2
+
          * @param c - desired iso-value
          * @param s0 - iso-value at point r0
          * @param s1 - iso-value at point r1
@@ -308,16 +312,16 @@ namespace
         std::vector<Point2> calcIntersection(double c, double s0, double s1, double s2, double s3)
         {
             std::vector<Point2> intersections;
-            double denominator = 2 * (s0 + s1 - s2 + s3);
+            double denominator = 2 * (s0 + s1 - s2 - s3);
             double result;
 
             //check if denominator is too close/equals zero, return empty as error
-            if (abs(denominator) < 0.001)
+            if (abs(denominator) < 0.000001)
             {
                 return intersections;
             }
 
-            double w = 4 * (s3 - c) * (s0 + s1 - s2 + s3) + (pow((s0 + s1), 2));
+            double w = pow((s0 + s1), 2) - 4 * c * (s0 + s1 - s2 - s3) - (4 * s2 * s3);
             //check if root is real, return empty as error (only real values)
             if (w < 0)
             {
@@ -327,15 +331,15 @@ namespace
             w = sqrt(w);
             if (w == 0)
             {
-                result = (s0 + s1) / denominator;
+                result = (s0 + s1 - 2 * s3) / denominator;
                 intersections.push_back({Point2({result, result})});
             }
             else
             {
-                result = (s0 + s1 + w) / denominator;
+                result = (s0 + s1 - 2 * s3 + w) / denominator;
                 intersections.push_back({Point2({result, result})});
 
-                result = (s0 + s1 - w) / denominator;
+                result = (s0 + s1 - 2 * s3 - w) / denominator;
                 intersections.push_back({Point2({result, result})});
             }
 
