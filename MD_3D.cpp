@@ -26,6 +26,8 @@ namespace
         std::shared_ptr<const Field<3, Scalar>> field;
         std::shared_ptr<const Grid<3>> grid;
         std::vector<Point3> controlDiamond;
+        std::vector<VectorF<3>> vertGrid;
+        std::vector<VectorF<3>> edge;
 
     public:
         struct Options : public VisAlgorithm::Options
@@ -52,6 +54,7 @@ namespace
             {
                 addGraphics("Iso-surface");
                 addGraphics("Diamond");
+                addGraphics("Diamond-Edge");
             }
         };
 
@@ -122,21 +125,21 @@ namespace
             {
                 if (tr.second.size() >= 3)
                 {
-                    isoSurfaces.insert(isoSurfaces.end(), {VectorF<3>(tr.second[0]), VectorF<3>(tr.second[1]), VectorF<3>(tr.second[3])});
+                    isoSurfaces.insert(isoSurfaces.end(), {VectorF<3>(tr.second[0]), VectorF<3>(tr.second[1]), VectorF<3>(tr.second[2])});
                 }
             }
 
-            /************LOGGING***************/
-            std::vector<VectorF<3>> vertGrid;
-
-            size_t k = controlDiamond.size() - 1;
+            /************LOGGING****************/
+            size_t k = controlDiamond.size() - 2;
 
             for (size_t i = 0; i < k; i++)
             {
-                vertGrid.insert(vertGrid.end(), {VectorF<3>(controlDiamond[i]), VectorF<3>(controlDiamond[i + 1])});
+                size_t index = (i + 1) % k;
+                vertGrid.insert(vertGrid.end(), {VectorF<3>(controlDiamond[i]), VectorF<3>(controlDiamond[index])});
                 vertGrid.insert(vertGrid.end(), {VectorF<3>(controlDiamond[i]), VectorF<3>(controlDiamond[k])});
                 vertGrid.insert(vertGrid.end(), {VectorF<3>(controlDiamond[i]), VectorF<3>(controlDiamond[k + 1])});
             }
+            edge.insert(edge.end(), {VectorF<3>(controlDiamond[k]), VectorF<3>(controlDiamond[k + 1])});
 
             if (abortFlag)
             {
@@ -173,6 +176,17 @@ namespace
                                             resourcePath + "shader/line/noShading/singleColor/fragment.glsl",
                                             resourcePath + "shader/line/noShading/singleColor/geometry.glsl"));
             setGraphics("Diamond", diamond);
+
+            std::shared_ptr<graphics::Drawable> diamondE = system.makePrimitive(
+                graphics::PrimitiveConfig{graphics::RenderPrimitives::LINES}
+                    .vertexBuffer("in_vertex", system.makeBuffer(edge))
+                    .uniform("u_lineWidth", 3.0f)
+                    .uniform("u_color", Color(0.0, 1.0, 0.0))
+                    .boundingSphere(bs),
+                system.makeProgramFromFiles(resourcePath + "shader/line/noShading/singleColor/vertex.glsl",
+                                            resourcePath + "shader/line/noShading/singleColor/fragment.glsl",
+                                            resourcePath + "shader/line/noShading/singleColor/geometry.glsl"));
+            setGraphics("Diamond-Edge", diamondE);
         }
 
         /**
@@ -200,101 +214,75 @@ namespace
             //get control points of the grid
             const ValueArray<Point3> &points = grid->points();
 
-            int test = 1;
             //FIND DIAMONDS
             for (auto &tEdge : tetrahedronEdges)
             {
-                if (tEdge.second.size() >= 4)
+                std::pair<size_t, size_t> sharedEdge = tEdge.first;
+                std::vector<size_t> tetrIndices = tEdge.second;
+                size_t kTetrCount = tetrIndices.size();
+
+                if (kTetrCount >= 4)
                 {
                     std::vector<Point3> d;
-                    std::vector<std::vector<size_t>> tetrIndices;
-                    std::unordered_set<size_t> diamondIndices;
+                    std::vector<std::vector<size_t>> tetrPointIndices;
+                    std::vector<size_t> diamondIndices;
 
-                    for (auto &tEdgeTetr : tEdge.second)
+                    for (auto &tI : tetrIndices)
                     {
-                        Cell cell = grid->cell(tEdgeTetr);
+                        Cell cell = grid->cell(tI);
                         std::vector<size_t> tempTetrI;
                         for (size_t i = 0; i < 4; i++)
                         {
-                            if (cell.index(i) != (tEdge.first).first && cell.index(i) != (tEdge.first).second)
+                            if (cell.index(i) != sharedEdge.first && cell.index(i) != sharedEdge.second)
                                 tempTetrI.push_back(cell.index(i));
                         }
-                        tetrIndices.push_back(tempTetrI);
+                        tetrPointIndices.push_back(tempTetrI);
                     }
 
                     size_t k = 0;
                     std::vector<size_t> visitedInd;
-                    for (size_t i = 0; i < tEdge.second.size() - 1; i++)
+                    for (size_t i = 0; i < kTetrCount; i++)
                     {
-                        for (size_t j = 0; j < tEdge.second.size(); j++)
+                        for (size_t j = 0; j < kTetrCount; j++)
                         {
                             if (k == j || std::find(visitedInd.begin(), visitedInd.end(), j) != visitedInd.end())
                                 continue;
 
-                            if (tetrIndices[k][0] == tetrIndices[j][0])
+                            if (tetrPointIndices[k][0] == tetrPointIndices[j][0] || tetrPointIndices[k][0] == tetrPointIndices[j][1])
                             {
-                                diamondIndices.insert(tetrIndices[k][1]);
-                                diamondIndices.insert(tetrIndices[k][0]);
-                                diamondIndices.insert(tetrIndices[j][1]);
-                                k = j;
+                                if (k == 0)
+                                    diamondIndices.push_back(tetrPointIndices[k][1]);
+                                diamondIndices.push_back(tetrPointIndices[k][0]);
                                 visitedInd.push_back(k);
+                                k = j;
                                 break;
                             }
-                            else if (tetrIndices[k][0] == tetrIndices[j][1])
+                            else if (tetrPointIndices[k][1] == tetrPointIndices[j][0] || tetrPointIndices[k][1] == tetrPointIndices[j][1])
                             {
-                                diamondIndices.insert(tetrIndices[k][1]);
-                                diamondIndices.insert(tetrIndices[k][0]);
-                                diamondIndices.insert(tetrIndices[j][0]);
-                                k = j;
+                                if (k == 0)
+                                    diamondIndices.push_back(tetrPointIndices[k][0]);
+                                diamondIndices.push_back(tetrPointIndices[k][1]);
                                 visitedInd.push_back(k);
-                                break;
-                            }
-                            else if (tetrIndices[k][1] == tetrIndices[j][0])
-                            {
-                                diamondIndices.insert(tetrIndices[k][0]);
-                                diamondIndices.insert(tetrIndices[k][1]);
-                                diamondIndices.insert(tetrIndices[j][1]);
                                 k = j;
-                                visitedInd.push_back(k);
-                                break;
-                            }
-                            else if (tetrIndices[k][1] == tetrIndices[j][1])
-                            {
-                                diamondIndices.insert(tetrIndices[k][0]);
-                                diamondIndices.insert(tetrIndices[k][1]);
-                                diamondIndices.insert(tetrIndices[j][0]);
-                                k = j;
-                                visitedInd.push_back(k);
                                 break;
                             }
                         }
                     }
-
-                    //diamondIndices.erase((tEdge.first).first);
-                    //diamondIndices.erase((tEdge.first).second);
 
                     for (auto &dI : diamondIndices)
                     {
                         d.push_back(points[dI]);
                     }
-                    d.push_back(points[(tEdge.first).first]);
-                    d.push_back(points[(tEdge.first).second]);
 
-                    if (test > 0)
-                    {
-                        infoLog() << tEdge.second.size() << std::endl;
-                        for (auto &dI : d)
-                        {
-                            infoLog() << dI << " ";
-                        }
-                        infoLog() << std::endl;
-                        test--;
-                        controlDiamond = d;
-                    }
+                    d.push_back(points[sharedEdge.first]);
+                    d.push_back(points[sharedEdge.second]);
 
-                    diamonds[tEdge.second] = d;
+                    if (d.size() == kTetrCount + 2)
+                        diamonds[tetrIndices] = d;
                 }
             }
+
+            controlDiamond = diamonds.begin()->second;
 
             //check if splitting was neccesary
             bool splitting = false;
@@ -324,7 +312,7 @@ namespace
 
             if (splitting)
             {
-                return marchingDiamonds(tetrahedronEdges, tetrIntersectPoints, diamonds, tetrCellCount, isovalue, splitCount - 1);
+                //return marchingDiamonds(tetrahedronEdges, tetrIntersectPoints, diamonds, tetrCellCount, isovalue, splitCount - 1);
             }
             return tetrIntersectPoints;
         }
@@ -399,7 +387,7 @@ namespace
 
             double denominator = 4 * abs(C) * (-t) + D * (s[k + 1] - s[k]);
 
-            if (denominator == 0)
+            if (abs(denominator) < 0.00000001)
                 return intersections;
 
             double a = (16 * abs(C) * t + 6 * D * (s[k] - isovalue)) / denominator;
