@@ -25,6 +25,9 @@ namespace
     protected:
         std::shared_ptr<const Field<3, Scalar>> field;
         std::shared_ptr<const Grid<3>> grid;
+        std::map<std::pair<size_t, size_t>, std::vector<size_t>> tetrahedronEdges;
+        std::map<size_t, Point3> gridPoints;
+
         std::vector<Point3> controlDiamond;
         std::vector<VectorF<3>> vertGrid;
         std::vector<VectorF<3>> edge;
@@ -89,15 +92,18 @@ namespace
             //map of edges point indices as key and tetrahedron index as aggregated value
             std::map<std::pair<size_t, size_t>, std::vector<size_t>> tetrahedronEdges;
             size_t tetrCellCount = grid->numCells();
+            size_t gridPointCount = grid->numPoints();
 
             //vector of point and indices vector for diamonds
-            std::map<std::vector<size_t>, std::vector<Point3>> diamonds;
+            std::map<std::vector<size_t>, std::pair<std::vector<Point3>, std::pair<size_t, size_t>>> diamonds;
 
             //aggregates intersection for each triangle by index
             std::unordered_map<size_t, std::vector<Point3>> tetrIntersectPoints;
 
             //points for final iso segment drawing
             std::vector<VectorF<3>> isoSurfaces;
+
+            const ValueArray<Point3> &points = grid->points();
 
             //load all cells into vector
             for (size_t i = 0; i < tetrCellCount; i++)
@@ -106,7 +112,10 @@ namespace
                 std::vector<size_t> pI;
 
                 for (size_t j = 0; j < 4; j++)
+                {
                     pI.push_back(cell.index(j));
+                    gridPoints[cell.index(j)] = points[cell.index(j)];
+                }
 
                 std::sort(pI.begin(), pI.end());
 
@@ -118,7 +127,7 @@ namespace
                 tetrahedronEdges[std::make_pair(pI[2], pI[3])].push_back(i);
             }
 
-            tetrIntersectPoints = marchingDiamonds(tetrahedronEdges, tetrIntersectPoints, diamonds, tetrCellCount, isovalue, maxSplit + 1);
+            tetrIntersectPoints = marchingDiamonds(tetrahedronEdges, tetrIntersectPoints, diamonds, tetrCellCount, gridPointCount, isovalue, maxSplit + 1);
 
             //add triangle intersection points to final iso segment vector
             for (auto &tr : tetrIntersectPoints)
@@ -202,7 +211,7 @@ namespace
          * @return std::unordered_map<size_t, std::vector<Point3>> - map for aggregating intersection points for segment connection
          */
         template <typename T, typename U, typename V>
-        std::unordered_map<size_t, std::vector<Point3>> marchingDiamonds(T tetrahedronEdges, U tetrIntersectPoints, V diamonds, size_t tetrCellCount, double isovalue, int splitCount)
+        std::unordered_map<size_t, std::vector<Point3>> marchingDiamonds(T tetrahedronEdges, U tetrIntersectPoints, V diamonds, size_t tetrCellCount, size_t gridPointCount, double isovalue, int splitCount)
         {
             if (splitCount == 0)
             {
@@ -211,99 +220,64 @@ namespace
             tetrIntersectPoints.clear();
 
             auto evaluator = field->makeEvaluator();
-            //get control points of the grid
-            const ValueArray<Point3> &points = grid->points();
 
-            //FIND DIAMONDS
+            //find diamonds sharing an edge
             for (auto &tEdge : tetrahedronEdges)
             {
-                std::pair<size_t, size_t> sharedEdge = tEdge.first;
                 std::vector<size_t> tetrIndices = tEdge.second;
-                size_t kTetrCount = tetrIndices.size();
+                std::pair<std::vector<Point3>, std::pair<size_t, size_t>> diamondEl = findDiamond(tEdge);
 
-                if (kTetrCount >= 4)
-                {
-                    std::vector<Point3> d;
-                    std::vector<std::vector<size_t>> tetrPointIndices;
-                    std::vector<size_t> diamondIndices;
-
-                    for (auto &tI : tetrIndices)
-                    {
-                        Cell cell = grid->cell(tI);
-                        std::vector<size_t> tempTetrI;
-                        for (size_t i = 0; i < 4; i++)
-                        {
-                            if (cell.index(i) != sharedEdge.first && cell.index(i) != sharedEdge.second)
-                                tempTetrI.push_back(cell.index(i));
-                        }
-                        tetrPointIndices.push_back(tempTetrI);
-                    }
-
-                    size_t k = 0;
-                    std::vector<size_t> visitedInd;
-                    for (size_t i = 0; i < kTetrCount; i++)
-                    {
-                        for (size_t j = 0; j < kTetrCount; j++)
-                        {
-                            if (k == j || std::find(visitedInd.begin(), visitedInd.end(), j) != visitedInd.end())
-                                continue;
-
-                            if (tetrPointIndices[k][0] == tetrPointIndices[j][0] || tetrPointIndices[k][0] == tetrPointIndices[j][1])
-                            {
-                                if (k == 0)
-                                    diamondIndices.push_back(tetrPointIndices[k][1]);
-                                diamondIndices.push_back(tetrPointIndices[k][0]);
-                                visitedInd.push_back(k);
-                                k = j;
-                                break;
-                            }
-                            else if (tetrPointIndices[k][1] == tetrPointIndices[j][0] || tetrPointIndices[k][1] == tetrPointIndices[j][1])
-                            {
-                                if (k == 0)
-                                    diamondIndices.push_back(tetrPointIndices[k][0]);
-                                diamondIndices.push_back(tetrPointIndices[k][1]);
-                                visitedInd.push_back(k);
-                                k = j;
-                                break;
-                            }
-                        }
-                    }
-
-                    for (auto &dI : diamondIndices)
-                    {
-                        d.push_back(points[dI]);
-                    }
-
-                    d.push_back(points[sharedEdge.first]);
-                    d.push_back(points[sharedEdge.second]);
-
-                    if (d.size() == kTetrCount + 2)
-                        diamonds[tetrIndices] = d;
-                }
+                if (!diamondEl.first.empty())
+                    diamonds[tetrIndices] = diamondEl;
             }
 
-            controlDiamond = diamonds.begin()->second;
+            controlDiamond = (diamonds.begin()->second).first;
 
             //check if splitting was neccesary
             bool splitting = false;
 
+            std::map<std::vector<size_t>, std::pair<std::vector<Point3>, std::pair<size_t, size_t>>> newDiamondPoints;
+
             //find all intersections on grid, using constant iterator for manipulating the original structure
             for (auto dP = diamonds.cbegin(); dP != diamonds.cend();)
             {
-                std::vector<Point3> tetrIntPoints = findIntersections(dP->second, isovalue, evaluator);
+                std::vector<size_t> tetrIndices = dP->first;
+                std::vector<Point3> diamPoints = (dP->second).first;
+                std::pair<size_t, size_t> edgeE = (dP->second).second;
+                size_t kTetrCount = tetrIndices.size();
+                std::vector<Point3> tetrIntPoints = findIntersections(diamPoints, isovalue, evaluator);
 
                 //splitting for more than one intersection found
                 if (tetrIntPoints.size() == 2)
                 {
                     splitting = true;
 
+                    //new point halfway between the two intersections
+                    Point3 newVertex = (tetrIntPoints[0] + tetrIntPoints[1]) / 2;
+
+                    //new triangles and diamonds created through splitting with new vertex, added by expanding cell indices
+                    gridPoints[gridPointCount] = newVertex;
+
+                    std::vector<size_t> oldTetrInd = tetrahedronEdges[edgeE];
+                    std::vector<size_t> newTetrInd{tetrCellCount, tetrCellCount + 1, tetrCellCount + 2, tetrCellCount + 3};
+
+                    tetrahedronEdges[std::make_pair(edgeE.first, gridPointCount)] = oldTetrInd;
+                    tetrahedronEdges[std::make_pair(edgeE.second, gridPointCount)] = newTetrInd;
+
+                    gridPointCount++;
+                    tetrCellCount += 4;
+
+                    //erase the two original triangles and found diamond
+                    tetrahedronEdges.erase(edgeE);
+                    dP = diamonds.erase(dP);
+
                     continue;
                 }
                 else if (tetrIntPoints.size() == 1)
                 {
                     //add the one intersection two all k Tetraeders
-                    for (size_t i = 0; i < (dP->first).size(); i++)
-                        tetrIntersectPoints[dP->first[i]].push_back(tetrIntPoints[0]);
+                    for (auto tetrInd : dP->first)
+                        tetrIntersectPoints[tetrInd].push_back(tetrIntPoints[0]);
                 }
                 ++dP;
             }
@@ -312,7 +286,7 @@ namespace
 
             if (splitting)
             {
-                //return marchingDiamonds(tetrahedronEdges, tetrIntersectPoints, diamonds, tetrCellCount, isovalue, splitCount - 1);
+                //return marchingDiamonds(tetrahedronEdges, tetrIntersectPoints, diamonds, tetrCellCount, gridPointCount, isovalue, splitCount - 1);
             }
             return tetrIntersectPoints;
         }
@@ -361,21 +335,18 @@ namespace
         }
 
         /**
-         * @brief Cubic solving according to Schwarze[1] and Shelbey[2] 
+         * @brief Cubic solving according to Schwarze[1], which is based on Cardano’s formula for cubic equations
          * 
          * [1] = Jochen Schwarze. Cubic and quartic roots. In Graphics Gems, pages 404–407. Academic Press Professional, Inc., San Diego, CA, USA, 1990.
-         * [2] = Shelbey, Samuel, ed. (1975). CRC Standard Mathematical Tables. CRC Press. 
          * 
-         * @param s 
-         * @param C 
-         * @param D 
-         * @param E 
+         * @param s - vector of values on grid points
+         * @param C,D,E - helper numbers for calculation
          * @param isovalue 
          * @return std::vector<double> 
          */
         std::vector<double> calcIntersection(std::vector<double> s, double C, double D, double isovalue)
         {
-            std::vector<double> intersections;
+            std::vector<double> intersections{999};
 
             double sRingSum = 0;
             size_t k = s.size() - 2;
@@ -385,33 +356,111 @@ namespace
 
             double t = k * isovalue - sRingSum;
 
-            double denominator = 4 * abs(C) * (-t) + D * (s[k + 1] - s[k]);
+            double denominator = 4 * abs(C) * (-t) + D * (s[k + 1] - s[k] - isovalue);
 
-            if (abs(denominator) < 0.00000001)
+            if (abs(denominator) < 0.00000000001)
                 return intersections;
+            intersections.clear();
 
-            double a = (16 * abs(C) * t + 6 * D * (s[k] - isovalue)) / denominator;
-            double b = (16 * abs(C) * (-t) + 12 * D * (isovalue - s[k])) / denominator;
-            double c = (8 * D * (s[k] - isovalue)) / denominator;
+            double a = (16 * abs(C) * t + D * (6 * s[k] - isovalue)) / denominator;
+            double b = (16 * abs(C) * (-t) + 4 * D * (isovalue - 3 * s[k])) / denominator;
+            double c = (4 * D * (2 * s[k] - isovalue)) / denominator;
 
-            double p = pow(a, 2) / 3 + b;
-            double q = c - (2 * pow(a, 3) / 27) - a * b / 3;
+            double p = (1 / 3) * b - (pow(a, 2) / 9);
+            double q = (1 / 2) * c + (pow(a, 3) / 27) - ((a * b) / 6);
 
-            if (p != 0 && (4 * pow(p, 3) + 27 * pow(q, 3)) < 0)
+            double determinant = pow(q, 2) + pow(p, 3);
+            double u = cbrt(-q + sqrt(D));
+            double v = cbrt(-q - sqrt(D));
+
+            if (determinant > 0)
+                intersections.push_back(u + v);
+            else if (determinant == 0)
             {
-                for (size_t i = 0; i < 3; i++)
-                {
-                    double y = 2 * sqrt(-p / 3) * cos(1 / 3 * acos((3 * q / 2 * p) * sqrt(-3 / p)) - (2 * M_PI * k) / 3);
-                    intersections.push_back(y);
-                }
+                intersections.push_back(u + v);
+                intersections.push_back(-(u + v) / 2);
+            }
+            else
+            {
+                double y1 = 2 * sqrt(-p) * cos((1 / 3) * (-q / sqrt(-pow(p, 3))));
+                double y2 = -2 * sqrt(-p) * cos((1 / 3) * (acos(-q / sqrt(-pow(p, 3))) + M_PI));
+                double y3 = -2 * sqrt(-p) * cos((1 / 3) * (acos(-q / sqrt(-pow(p, 3))) - M_PI));
+                intersections.insert(intersections.end(), {y1, y2, y3});
             }
 
             return intersections;
         }
 
-        std::vector<Point3> findDiamond()
+        template <typename T>
+        std::pair<std::vector<Point3>, std::pair<size_t, size_t>> findDiamond(T tEdge)
         {
-            return std::vector<Point3>();
+            std::pair<std::vector<Point3>, std::pair<size_t, size_t>> diamondElement;
+            std::pair<size_t, size_t> sharedEdge = tEdge.first;
+            std::vector<size_t> tetrIndices = tEdge.second;
+            size_t kTetrCount = tetrIndices.size();
+
+            if (kTetrCount >= 4)
+            {
+                std::vector<Point3> d;
+                std::vector<std::vector<size_t>> tetrPointIndices;
+                std::vector<size_t> diamondIndices;
+
+                for (auto &tI : tetrIndices)
+                {
+                    Cell cell = grid->cell(tI);
+                    std::vector<size_t> tempTetrI;
+                    for (size_t i = 0; i < 4; i++)
+                    {
+                        if (cell.index(i) != sharedEdge.first && cell.index(i) != sharedEdge.second)
+                            tempTetrI.push_back(cell.index(i));
+                    }
+                    tetrPointIndices.push_back(tempTetrI);
+                }
+
+                size_t k = 0;
+                std::vector<size_t> visitedInd;
+                for (size_t i = 0; i < kTetrCount; i++)
+                {
+                    for (size_t j = 0; j < kTetrCount; j++)
+                    {
+                        if (k == j || std::find(visitedInd.begin(), visitedInd.end(), j) != visitedInd.end())
+                            continue;
+
+                        if (tetrPointIndices[k][0] == tetrPointIndices[j][0] || tetrPointIndices[k][0] == tetrPointIndices[j][1])
+                        {
+                            if (k == 0)
+                                diamondIndices.push_back(tetrPointIndices[k][1]);
+                            diamondIndices.push_back(tetrPointIndices[k][0]);
+                            visitedInd.push_back(k);
+                            k = j;
+                            break;
+                        }
+                        else if (tetrPointIndices[k][1] == tetrPointIndices[j][0] || tetrPointIndices[k][1] == tetrPointIndices[j][1])
+                        {
+                            if (k == 0)
+                                diamondIndices.push_back(tetrPointIndices[k][0]);
+                            diamondIndices.push_back(tetrPointIndices[k][1]);
+                            visitedInd.push_back(k);
+                            k = j;
+                            break;
+                        }
+                    }
+                }
+
+                for (auto &dI : diamondIndices)
+                {
+                    d.push_back(gridPoints[dI]);
+                }
+
+                d.push_back(gridPoints[sharedEdge.first]);
+                d.push_back(gridPoints[sharedEdge.second]);
+
+                auto edgeE = std::make_pair(sharedEdge.first, sharedEdge.second);
+
+                if (d.size() == kTetrCount + 2)
+                    diamondElement = std::make_pair(d, edgeE);
+            }
+            return diamondElement;
         }
 
         Point3 barycentricTransform(std::vector<Point3> diamondPoints, double C, double D, double z)
@@ -427,7 +476,7 @@ namespace
 
             for (size_t i = 0; i < k; i++)
                 p += diamondPoints[i] * a1;
-            p += a2 * diamondPoints[k] + a3 * diamondPoints[k + 1];
+            p += (a2 * diamondPoints[k] + a3 * diamondPoints[k + 1]);
 
             return p;
         }
