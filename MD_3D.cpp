@@ -248,11 +248,10 @@ namespace
 
     private:
         /**
-         * @brief Handle intersection search for given diamond points, isovalue and evaluator
+         * @brief Handle intersection search for given diamond points, isovalue
          * 
          * @param dP 
          * @param isovalue 
-         * @param evaluator 
          * @return std::vector<Point3> - vector of intersection points, two at most
          */
         std::vector<Point3> findIntersections(std::vector<size_t> diamondPointInd, double isovalue)
@@ -288,7 +287,8 @@ namespace
         }
 
         /**
-         * @brief Cubic solving according to Schwarze[1], which is based on Cardano’s formula for cubic equations
+         * @brief Calc intersections of tetrahedron/diamond shared edge e with hyperplane of isocontour. 
+         * Cubic solving according to Schwarze[1], which is based on Cardano’s formula for cubic equations
          * 
          * [1] = Jochen Schwarze. Cubic and quartic roots. In Graphics Gems, pages 404–407. Academic Press Professional, Inc., San Diego, CA, USA, 1990.
          * 
@@ -330,12 +330,12 @@ namespace
 
             if (determinant > 0) //one real root
                 intersections.push_back(u + v);
-            else if (abs(determinant) < 0.00000000001) //two real roots, y2 = y3
+            else if (determinant == 0) //two real roots, y2 = y3
             {
                 intersections.push_back(u + v);
                 intersections.push_back(-(u + v) / 2);
             }
-            else //three real values, solved by trigonometry to avoid compley numbers
+            else if (determinant < 0) //three real values, solved by trigonometry to avoid compley numbers
             {
                 double y1 = 2 * sqrt(-p) * cos((1 / 3) * (-q / sqrt(-pow(p, 3))));
                 double y2 = -2 * sqrt(-p) * cos((1 / 3) * (acos(-q / sqrt(-pow(p, 3))) + M_PI));
